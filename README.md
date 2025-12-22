@@ -54,7 +54,7 @@ Gmail/Outlook/iCloud → Forward Rules → inbox@yourdomain.com
 
 ```bash
 # Clone this repo
-git clone https://github.com/mriechers/cloudflare-email-to-obsidian.git
+git clone https://github.com/MarkOnFire/cloudflare-email-to-obsidian.git
 cd cloudflare-email-to-obsidian
 
 # Install dependencies
@@ -205,7 +205,7 @@ Your typical Obsidian vault is well under 10GB. Email notes are tiny.
 
 ## Prior Art
 
-This project evolved from an OAuth-based Obsidian plugin approach (see [obsidian-email-to-para](https://github.com/mriechers/obsidian-email-to-para) - archived). The OAuth approach required complex setup with Google Cloud Console and Azure Portal. This Cloudflare approach is simpler and works on mobile.
+This project evolved from an OAuth-based Obsidian plugin approach (see [obsidian-email-to-para](https://github.com/MarkOnFire/obsidian-email-to-para) - archived). The OAuth approach required complex setup with Google Cloud Console and Azure Portal. This Cloudflare approach is simpler and works on mobile.
 
 ## License
 
