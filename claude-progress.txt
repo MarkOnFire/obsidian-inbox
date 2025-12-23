@@ -1,0 +1,39 @@
+# Claude Progress Log - cloudflare-email-to-obsidian
+
+This file tracks development progress across Claude Code sessions.
+Read this at the start of each session for context.
+
+---
+
+## 2025-12-23 - Project Setup
+
+### What was done:
+- Created new repo from deprecated obsidian-email-to-para OAuth approach
+- Set up project structure with src/, templates/, knowledge/ folders
+- Created initial worker.ts skeleton with manual MIME parsing (to be replaced)
+- Scraped documentation for Cloudflare Email Workers, R2 API, postal-mime, turndown
+- Added dependencies: postal-mime (email parsing), turndown (HTML→MD)
+- Created CLAUDE.md with project context and conventions
+- Set up long-running agent infrastructure (init.sh, feature_list.json, this file)
+
+### Current state:
+- Dependencies defined in package.json but not yet installed
+- worker.ts has skeleton code with TODOs - needs update to use postal-mime
+- 8 features defined in feature_list.json, all pending
+- Ready to begin F001: Email parsing with postal-mime
+
+### Next session should:
+1. Run ./init.sh to install dependencies
+2. Update src/worker.ts to use postal-mime for email parsing
+3. Implement F001 and mark as complete
+4. Continue with F002-F008
+
+### Known issues:
+- None yet
+
+### Notes:
+- User prefers Markdown output (HTML converted via turndown)
+- Deduplication via R2 head() check before write
+- Target folder is configurable via INBOX_FOLDER env var
+
+---

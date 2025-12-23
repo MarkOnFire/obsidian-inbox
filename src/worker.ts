@@ -5,12 +5,16 @@
  * for sync to Obsidian via Remotely Save plugin.
  */
 
-import { EmailMessage } from '@cloudflare/workers-types';
+import PostalMime from 'postal-mime';
+import type { Email, Address } from 'postal-mime';
+import TurndownService from 'turndown';
 
 export interface Env {
   OBSIDIAN_BUCKET: R2Bucket;
   INBOX_FOLDER: string;
 }
+
+type EmailSource = 'gmail' | 'outlook' | 'icloud' | 'unknown';
 
 interface ParsedEmail {
   messageId: string;
@@ -20,14 +24,23 @@ interface ParsedEmail {
   };
   subject: string;
   date: Date;
-  body: string;
-  source: 'gmail' | 'outlook' | 'icloud' | 'unknown';
+  body: string; // Markdown-converted body
+  source: EmailSource;
 }
 
+// Initialize Turndown for HTML to Markdown conversion
+const turndownService = new TurndownService({
+  headingStyle: 'atx',
+  codeBlockStyle: 'fenced',
+  bulletListMarker: '-',
+});
+
 export default {
-  async email(message: EmailMessage, env: Env, ctx: ExecutionContext): Promise<void> {
+  async email(message: ForwardableEmailMessage, env: Env, ctx: ExecutionContext): Promise<void> {
     try {
-      // Parse the incoming email
+      console.log(`Processing email from: ${message.from}`);
+
+      // Parse the incoming email with postal-mime
       const parsed = await parseEmail(message);
 
       // Generate markdown note
@@ -45,8 +58,13 @@ export default {
 
       // Write to R2 bucket
       await env.OBSIDIAN_BUCKET.put(filename, markdown, {
+        httpMetadata: {
+          contentType: 'text/markdown; charset=utf-8',
+        },
         customMetadata: {
           'email-id': parsed.messageId,
+          'email-from': parsed.from.email,
+          'email-source': parsed.source,
           'created': new Date().toISOString(),
         },
       });
@@ -59,79 +77,120 @@ export default {
   },
 };
 
-async function parseEmail(message: EmailMessage): Promise<ParsedEmail> {
-  // TODO: Implement email parsing
-  // - Extract headers (From, Subject, Date, Message-ID)
-  // - Parse MIME parts to get body (prefer text/plain, fallback to text/html)
-  // - Convert HTML to markdown if needed
-  // - Detect source (gmail, outlook, icloud) from headers
+/**
+ * Parse email using postal-mime library
+ */
+async function parseEmail(message: ForwardableEmailMessage): Promise<ParsedEmail> {
+  // Parse with postal-mime - it handles ReadableStream directly
+  const email: Email = await PostalMime.parse(message.raw);
 
-  const rawEmail = await streamToString(message.raw);
+  // Extract from address
+  const fromAddr = extractFromAddress(email);
 
-  // Basic header extraction (will be enhanced)
-  const fromHeader = message.from;
-  const subject = message.headers.get('subject') || 'No Subject';
-  const messageId = message.headers.get('message-id') || generateId();
-  const dateHeader = message.headers.get('date');
+  // Get message ID from headers or generate one
+  const messageId = email.messageId || generateMessageId();
 
-  // Parse from header "Name <email@example.com>"
-  const fromMatch = fromHeader.match(/^(?:"?([^"]*)"?\s)?<?([^>]+)>?$/);
-  const fromName = fromMatch?.[1] || fromMatch?.[2] || fromHeader;
-  const fromEmail = fromMatch?.[2] || fromHeader;
+  // Parse date
+  const emailDate = email.date ? new Date(email.date) : new Date();
 
-  // Detect email source from headers
-  const source = detectEmailSource(message.headers);
+  // Convert body to markdown
+  const body = convertBodyToMarkdown(email);
+
+  // Detect source from headers
+  const source = detectEmailSource(email);
 
   return {
     messageId: sanitizeMessageId(messageId),
-    from: {
-      name: fromName,
-      email: fromEmail,
-    },
-    subject,
-    date: dateHeader ? new Date(dateHeader) : new Date(),
-    body: await extractBody(rawEmail),
+    from: fromAddr,
+    subject: email.subject || 'No Subject',
+    date: emailDate,
+    body,
     source,
   };
 }
 
-function detectEmailSource(headers: Headers): ParsedEmail['source'] {
-  // TODO: Implement source detection from headers
-  // Gmail: X-Gm-Message-State header
-  // Outlook: X-MS-Exchange-* headers
-  // iCloud: Check received headers for apple.com
+/**
+ * Extract from address from parsed email
+ */
+function extractFromAddress(email: Email): { name: string; email: string } {
+  if (email.from) {
+    // Check if it's a mailbox (has address property)
+    if ('address' in email.from && email.from.address) {
+      return {
+        name: email.from.name || email.from.address,
+        email: email.from.address,
+      };
+    }
+    // It's a group - use first member or fallback
+    if ('group' in email.from && email.from.group && email.from.group.length > 0) {
+      const first = email.from.group[0];
+      return {
+        name: first.name || first.address,
+        email: first.address,
+      };
+    }
+  }
 
-  const gmailHeader = headers.get('x-gm-message-state');
-  const outlookHeader = headers.get('x-ms-exchange-organization-authas');
-  const received = headers.get('received') || '';
+  return {
+    name: 'Unknown',
+    email: 'unknown@unknown.com',
+  };
+}
 
-  if (gmailHeader) return 'gmail';
-  if (outlookHeader) return 'outlook';
-  if (received.includes('apple.com') || received.includes('icloud.com')) return 'icloud';
+/**
+ * Convert email body to Markdown
+ * Prefer HTML (converted to MD), fallback to plain text
+ */
+function convertBodyToMarkdown(email: Email): string {
+  if (email.html) {
+    try {
+      return turndownService.turndown(email.html);
+    } catch (error) {
+      console.warn('Failed to convert HTML to Markdown, using text fallback:', error);
+    }
+  }
+
+  if (email.text) {
+    return email.text;
+  }
+
+  return '*No email content*';
+}
+
+/**
+ * Detect email source from headers
+ */
+function detectEmailSource(email: Email): EmailSource {
+  // Check headers array for source indicators
+  for (const header of email.headers) {
+    const key = header.key.toLowerCase();
+    const value = header.value.toLowerCase();
+
+    // Gmail indicator
+    if (key === 'x-gm-message-state') {
+      return 'gmail';
+    }
+
+    // Outlook/Microsoft indicators
+    if (key.startsWith('x-ms-exchange') || key === 'x-microsoft-antispam') {
+      return 'outlook';
+    }
+
+    // iCloud indicators
+    if (key === 'received' && (value.includes('apple.com') || value.includes('icloud.com'))) {
+      return 'icloud';
+    }
+  }
 
   return 'unknown';
 }
 
-async function extractBody(rawEmail: string): Promise<string> {
-  // TODO: Implement proper MIME parsing
-  // For now, basic extraction
-  // Will need to handle:
-  // - multipart/alternative (prefer text/plain)
-  // - multipart/mixed (extract text parts)
-  // - quoted-printable decoding
-  // - base64 decoding
-  // - HTML to markdown conversion
-
-  // Basic: split on double newline to separate headers from body
-  const parts = rawEmail.split('\r\n\r\n');
-  if (parts.length < 2) {
-    return rawEmail.split('\n\n').slice(1).join('\n\n');
-  }
-  return parts.slice(1).join('\r\n\r\n');
-}
-
+/**
+ * Generate markdown note content
+ */
 function generateMarkdown(email: ParsedEmail): string {
   const createdDate = formatDate(email.date);
+  const fullDate = formatDateLong(email.date);
 
   return `---
 tags:
@@ -151,7 +210,7 @@ source: ${email.source}
 ---
 ## Email
 **From:** ${email.from.name} <${email.from.email}>
-**Date:** ${formatDateLong(email.date)}
+**Date:** ${fullDate}
 **Subject:** ${email.subject}
 
 ${email.body}
@@ -162,34 +221,23 @@ ${email.body}
 `;
 }
 
+/**
+ * Generate safe filename from email
+ */
 function generateFilename(email: ParsedEmail, inboxFolder: string): string {
   const date = formatDate(email.date);
+
   // Sanitize subject for filename
   const safeSubject = email.subject
-    .replace(/[/\\?%*:|"<>]/g, '-')
-    .replace(/\s+/g, ' ')
+    .replace(/[/\\?%*:|"<>]/g, '-') // Replace unsafe chars
+    .replace(/\s+/g, ' ')           // Normalize whitespace
     .trim()
-    .slice(0, 100);
+    .slice(0, 100);                 // Limit length
 
   return `${inboxFolder}/${date} - ${safeSubject}.md`;
 }
 
 // Utility functions
-
-async function streamToString(stream: ReadableStream): Promise<string> {
-  const reader = stream.getReader();
-  const decoder = new TextDecoder();
-  let result = '';
-
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    result += decoder.decode(value, { stream: true });
-  }
-
-  result += decoder.decode();
-  return result;
-}
 
 function formatDate(date: Date): string {
   return date.toISOString().split('T')[0];
@@ -206,8 +254,9 @@ function formatDateLong(date: Date): string {
 }
 
 function escapeYaml(str: string): string {
-  if (/[:#{}[\],&*?|<>=!%@`]/.test(str) || str.includes('\n')) {
-    return `"${str.replace(/"/g, '\\"')}"`;
+  // Escape strings that need quoting in YAML
+  if (/[:#{}[\],&*?|<>=!%@`]/.test(str) || str.includes('\n') || str.includes('"')) {
+    return `"${str.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
   }
   return str;
 }
@@ -216,6 +265,17 @@ function sanitizeMessageId(id: string): string {
   return id.replace(/[<>]/g, '').replace(/[^a-zA-Z0-9@._-]/g, '_');
 }
 
-function generateId(): string {
+function generateMessageId(): string {
   return `${Date.now()}-${Math.random().toString(36).slice(2, 11)}`;
+}
+
+// Type declaration for Cloudflare Email Workers
+interface ForwardableEmailMessage {
+  readonly from: string;
+  readonly to: string;
+  readonly headers: Headers;
+  readonly raw: ReadableStream<Uint8Array>;
+  readonly rawSize: number;
+  setReject(reason: string): void;
+  forward(rcptTo: string, headers?: Headers): Promise<void>;
 }
