@@ -14,9 +14,9 @@ export interface Env {
   INBOX_FOLDER: string;
 }
 
-type EmailSource = 'gmail' | 'outlook' | 'icloud' | 'unknown';
+export type EmailSource = 'gmail' | 'outlook' | 'icloud' | 'unknown';
 
-interface ParsedEmail {
+export interface ParsedEmail {
   messageId: string;
   from: {
     name: string;
@@ -26,6 +26,7 @@ interface ParsedEmail {
   date: Date;
   body: string; // Markdown-converted body
   source: EmailSource;
+  attachments: Email['attachments'];
 }
 
 // Initialize Turndown for HTML to Markdown conversion
@@ -38,7 +39,7 @@ const turndownService = new TurndownService({
 export default {
   async email(message: ForwardableEmailMessage, env: Env, ctx: ExecutionContext): Promise<void> {
     try {
-      console.log(`Processing email from: ${message.from}`);
+      console.log('Processing email, message ID will be assigned');
 
       // Parse the incoming email with postal-mime
       const parsed = await parseEmail(message);
@@ -47,12 +48,13 @@ export default {
       const markdown = generateMarkdown(parsed);
 
       // Generate filename
-      const filename = generateFilename(parsed, env.INBOX_FOLDER);
+      const inboxFolder = env.INBOX_FOLDER || '0 - INBOX';
+      const filename = generateFilename(parsed, inboxFolder);
 
       // Check if note already exists (deduplication)
       const existing = await env.OBSIDIAN_BUCKET.head(filename);
       if (existing) {
-        console.log(`Note already exists: ${filename}`);
+        console.log(`Duplicate detected, skipping: ${parsed.messageId}`);
         return;
       }
 
@@ -69,13 +71,47 @@ export default {
         },
       });
 
-      console.log(`Created note: ${filename}`);
+      console.log(`Note created: ${parsed.messageId}`);
+
+      // Handle attachments
+      if (parsed.attachments && parsed.attachments.length > 0) {
+        console.log(`Saving ${parsed.attachments.length} attachments...`);
+        const attachmentPromises = parsed.attachments.map(attachment =>
+          saveAttachment(env, parsed.messageId, attachment)
+        );
+        await Promise.all(attachmentPromises);
+        console.log('All attachments saved.');
+      }
+
     } catch (error) {
       console.error('Failed to process email:', error);
       // Don't throw - we don't want to bounce the email
     }
   },
 };
+
+/**
+ * Save an attachment to R2
+ */
+async function saveAttachment(env: Env, messageId: string, attachment: Email['attachments'][0]): Promise<void> {
+  const safeFilename = sanitizeAttachmentFilename(attachment.filename || 'untitled');
+  const attachmentPath = `_attachments/${messageId}/${safeFilename}`;
+
+  await env.OBSIDIAN_BUCKET.put(attachmentPath, attachment.content, {
+    httpMetadata: {
+      contentType: attachment.mimeType,
+    },
+  });
+  console.log(`Saved attachment: ${attachmentPath}`);
+}
+
+/**
+ * Sanitize attachment filename
+ */
+function sanitizeAttachmentFilename(filename: string): string {
+  // Remove path-related characters and other unsafe characters
+  return filename.replace(/[/\\?%*:|"<>]/g, '-').replace(/\s+/g, '_');
+}
 
 /**
  * Parse email using postal-mime library
@@ -106,6 +142,7 @@ async function parseEmail(message: ForwardableEmailMessage): Promise<ParsedEmail
     date: emailDate,
     body,
     source,
+    attachments: email.attachments,
   };
 }
 
@@ -160,7 +197,7 @@ function convertBodyToMarkdown(email: Email): string {
 /**
  * Detect email source from headers
  */
-function detectEmailSource(email: Email): EmailSource {
+export function detectEmailSource(email: Email): EmailSource {
   // Check headers array for source indicators
   for (const header of email.headers) {
     const key = header.key.toLowerCase();
@@ -172,7 +209,7 @@ function detectEmailSource(email: Email): EmailSource {
     }
 
     // Outlook/Microsoft indicators
-    if (key.startsWith('x-ms-exchange') || key === 'x-microsoft-antispam') {
+    if (key === 'x-ms-exchange-organization-authas' || key === 'x-microsoft-antispam') {
       return 'outlook';
     }
 
@@ -188,9 +225,27 @@ function detectEmailSource(email: Email): EmailSource {
 /**
  * Generate markdown note content
  */
-function generateMarkdown(email: ParsedEmail): string {
+export function generateMarkdown(email: ParsedEmail): string {
   const createdDate = formatDate(email.date);
   const fullDate = formatDateLong(email.date);
+
+  let attachmentsSection = '';
+  if (email.attachments && email.attachments.length > 0) {
+    const attachmentLinks = email.attachments
+      .map(att => {
+        const safeFilename = sanitizeAttachmentFilename(att.filename || 'untitled');
+        const attachmentPath = `_attachments/${email.messageId}/${safeFilename}`;
+        // Use Obsidian's wikilink format for attachments
+        return `- ![[${attachmentPath}]]`;
+      })
+      .join('\n');
+    attachmentsSection = `---
+## Attachments
+
+${attachmentLinks}
+
+`;
+  }
 
   return `---
 tags:
@@ -215,7 +270,7 @@ source: ${email.source}
 
 ${email.body}
 
----
+${attachmentsSection}---
 ## Notes
 
 `;
@@ -224,26 +279,27 @@ ${email.body}
 /**
  * Generate safe filename from email
  */
-function generateFilename(email: ParsedEmail, inboxFolder: string): string {
+export function generateFilename(email: ParsedEmail, inboxFolder: string): string {
   const date = formatDate(email.date);
 
-  // Sanitize subject for filename
-  const safeSubject = email.subject
+  // Clean and sanitize subject for filename
+  const cleanedSubject = email.subject.replace(/^(\[fwd:?\]|fwd:?)\s*/i, '');
+  const safeSubject = cleanedSubject
     .replace(/[/\\?%*:|"<>]/g, '-') // Replace unsafe chars
     .replace(/\s+/g, ' ')           // Normalize whitespace
     .trim()
     .slice(0, 100);                 // Limit length
 
-  return `${inboxFolder}/${date} - ${safeSubject}.md`;
+  return `${inboxFolder}/TASKS FROM EMAIL/${date} - ${safeSubject}.md`;
 }
 
-// Utility functions
+// Utility functions - exported for testing
 
-function formatDate(date: Date): string {
+export function formatDate(date: Date): string {
   return date.toISOString().split('T')[0];
 }
 
-function formatDateLong(date: Date): string {
+export function formatDateLong(date: Date): string {
   return date.toLocaleDateString('en-US', {
     year: 'numeric',
     month: 'long',
@@ -253,19 +309,31 @@ function formatDateLong(date: Date): string {
   });
 }
 
-function escapeYaml(str: string): string {
-  // Escape strings that need quoting in YAML
-  if (/[:#{}[\],&*?|<>=!%@`]/.test(str) || str.includes('\n') || str.includes('"')) {
+export function escapeYaml(str: string): string {
+  if (!str || str.length === 0) {
+    return '""';
+  }
+  // Check for YAML-problematic patterns
+  const needsQuoting =
+    /[:#{}[\],&*?|<>=!%@`]/.test(str) ||
+    str.includes('\n') ||
+    str.includes('"') ||
+    str.includes("'") ||
+    /^[-|>!&*]/.test(str) ||
+    /^(true|false|null|yes|no|on|off)$/i.test(str) ||
+    str !== str.trim();
+
+  if (needsQuoting) {
     return `"${str.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
   }
   return str;
 }
 
-function sanitizeMessageId(id: string): string {
+export function sanitizeMessageId(id: string): string {
   return id.replace(/[<>]/g, '').replace(/[^a-zA-Z0-9@._-]/g, '_');
 }
 
-function generateMessageId(): string {
+export function generateMessageId(): string {
   return `${Date.now()}-${Math.random().toString(36).slice(2, 11)}`;
 }
 
