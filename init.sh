@@ -1,12 +1,12 @@
 #!/bin/bash
-# init.sh - Bootstrap development environment for cloudflare-email-to-obsidian
+# init.sh - Bootstrap development environment for obsidian-inbox
 #
 # Run this at the start of every development session to ensure
 # consistent environment state.
 
 set -e
 
-echo "=== Cloudflare Email to Obsidian - Init ==="
+echo "=== Obsidian Inbox - Init ==="
 
 # Check Node.js
 if ! command -v node &> /dev/null; then

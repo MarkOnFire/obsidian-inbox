@@ -1,4 +1,4 @@
-# Cloudflare Email to Obsidian
+# Obsidian Inbox
 
 ## Project Overview
 

@@ -1,4 +1,4 @@
-# Claude Progress Log - cloudflare-email-to-obsidian
+# Claude Progress Log - obsidian-inbox
 
 This file tracks development progress across Claude Code sessions.
 Read this at the start of each session for context.

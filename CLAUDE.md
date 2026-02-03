@@ -1,4 +1,4 @@
-# Cloudflare Email to Obsidian
+# Obsidian Inbox
 
 > **See [AGENTS.md](./AGENTS.md)** for complete project instructions.
 
