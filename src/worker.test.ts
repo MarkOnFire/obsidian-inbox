@@ -16,8 +16,12 @@ import {
   extractNewsletterName,
   generateNewsletterMarkdown,
   generateNewsletterFilename,
+  extractRoute,
+  generateAgentMessageMarkdown,
+  generateAgentMessageFilename,
   type ParsedEmail,
   type EmailSource,
+  type EmailRoute,
 } from './worker';
 import {
   createMockEmail,
@@ -25,6 +29,7 @@ import {
   createOutlookEmail,
   createICloudEmail,
   createNewsletterEmail,
+  createAgentMessageEmail,
   createParsedEmail,
 } from './test-utils/email-fixtures';
 
@@ -448,5 +453,145 @@ describe('generateNewsletterFilename', () => {
     const filename = generateNewsletterFilename(email, 'NL');
     expect(filename).not.toContain('Fwd:');
     expect(filename).toContain('Weekly Digest');
+  });
+});
+
+// --- Address-Based Routing ---
+
+describe('extractRoute', () => {
+  it('routes email-to-obsidian to task pipeline', () => {
+    expect(extractRoute('email-to-obsidian@yourdomain.com')).toBe('task');
+    expect(extractRoute('email-to-obsidian@otherdomain.com')).toBe('task');
+    expect(extractRoute('email-to-obsidian@thirddomain.com')).toBe('task');
+  });
+
+  it('routes newsletters to newsletter pipeline', () => {
+    expect(extractRoute('newsletters@yourdomain.com')).toBe('newsletter');
+    expect(extractRoute('newsletters@otherdomain.com')).toBe('newsletter');
+  });
+
+  it('accepts singular newsletter alias', () => {
+    expect(extractRoute('newsletter@yourdomain.com')).toBe('newsletter');
+  });
+
+  it('routes claude to agent pipeline', () => {
+    expect(extractRoute('claude@yourdomain.com')).toBe('agent');
+    expect(extractRoute('claude@otherdomain.com')).toBe('agent');
+  });
+
+  it('routes inbox to catch-all', () => {
+    expect(extractRoute('inbox@yourdomain.com')).toBe('inbox');
+  });
+
+  it('routes unknown addresses to catch-all', () => {
+    expect(extractRoute('random@yourdomain.com')).toBe('inbox');
+    expect(extractRoute('support@example.com')).toBe('inbox');
+  });
+
+  it('is case-insensitive', () => {
+    expect(extractRoute('EMAIL-TO-OBSIDIAN@yourdomain.com')).toBe('task');
+    expect(extractRoute('Newsletters@otherdomain.com')).toBe('newsletter');
+    expect(extractRoute('Claude@yourdomain.com')).toBe('agent');
+  });
+});
+
+// --- Agent Message Templates ---
+
+describe('generateAgentMessageMarkdown', () => {
+  it('generates markdown with agent-message tag and pending status', () => {
+    const email = createParsedEmail({
+      messageId: 'agent-123',
+      from: { name: 'Mark Riechers', email: 'you@gmail.com' },
+      subject: 'Summarize my meeting notes',
+      date: new Date('2026-02-03T10:00:00Z'),
+      body: 'Please summarize the notes from today.',
+      source: 'gmail',
+    });
+
+    const markdown = generateAgentMessageMarkdown(email);
+
+    expect(markdown).toContain('tags:');
+    expect(markdown).toContain('- agent-message');
+    expect(markdown).not.toContain('- email-task');
+    expect(markdown).not.toContain('- newsletter');
+    expect(markdown).toContain('status: pending');
+    expect(markdown).toContain('from: you@gmail.com');
+    expect(markdown).toContain('email_id: agent-123');
+    expect(markdown).toContain('source: gmail');
+  });
+
+  it('does NOT include tasks section', () => {
+    const email = createParsedEmail();
+    const markdown = generateAgentMessageMarkdown(email);
+
+    expect(markdown).not.toContain('## Tasks in this note');
+    expect(markdown).not.toContain('- [ ] Review and process this email');
+  });
+
+  it('includes Agent Message heading and body', () => {
+    const email = createParsedEmail({
+      from: { name: 'Mark Riechers', email: 'mark@example.com' },
+      body: 'Do the thing please.',
+    });
+
+    const markdown = generateAgentMessageMarkdown(email);
+
+    expect(markdown).toContain('## Agent Message');
+    expect(markdown).toContain('**From:** Mark Riechers <mark@example.com>');
+    expect(markdown).toContain('Do the thing please.');
+  });
+
+  it('escapes YAML-problematic subjects', () => {
+    const email = createParsedEmail({
+      subject: 'Task: Do this thing',
+    });
+
+    const markdown = generateAgentMessageMarkdown(email);
+    expect(markdown).toContain('subject: "Task: Do this thing"');
+  });
+});
+
+describe('generateAgentMessageFilename', () => {
+  it('generates filename in agent folder', () => {
+    const email = createParsedEmail({
+      subject: 'Summarize meeting notes',
+      date: new Date('2026-02-03T10:00:00Z'),
+    });
+
+    const filename = generateAgentMessageFilename(email, '0 - INBOX/Agent Messages');
+    expect(filename).toBe('0 - INBOX/Agent Messages/2026-02-03 - Summarize meeting notes.md');
+  });
+
+  it('sanitizes unsafe characters in subject', () => {
+    const email = createParsedEmail({
+      subject: 'Task/With:Special<Chars>',
+      date: new Date('2026-02-03T10:00:00Z'),
+    });
+
+    const filename = generateAgentMessageFilename(email, 'Agent');
+    expect(filename).toBe('Agent/2026-02-03 - Task-With-Special-Chars-.md');
+  });
+
+  it('strips Fwd prefix from subject', () => {
+    const email = createParsedEmail({
+      subject: 'Fwd: Do this thing',
+      date: new Date('2026-02-03T10:00:00Z'),
+    });
+
+    const filename = generateAgentMessageFilename(email, 'Agent');
+    expect(filename).not.toContain('Fwd:');
+    expect(filename).toContain('Do this thing');
+  });
+
+  it('truncates long subjects to 100 chars', () => {
+    const email = createParsedEmail({
+      subject: 'A'.repeat(150),
+      date: new Date('2026-02-03T10:00:00Z'),
+    });
+
+    const filename = generateAgentMessageFilename(email, 'Agent');
+    // Agent/ + date + " - " + subject(max 100) + .md
+    const subjectPart = filename.split(' - ').slice(1).join(' - ').replace('.md', '');
+    expect(subjectPart.length).toBeLessThanOrEqual(100);
   });
 });

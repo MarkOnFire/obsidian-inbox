@@ -111,6 +111,17 @@ export function createNewsletterEmail(options: EmailFixtureOptions = {}): Email 
 }
 
 /**
+ * Create an agent-message email (sent to claude@domain)
+ */
+export function createAgentMessageEmail(options: EmailFixtureOptions = {}): Email {
+  return createMockEmail({
+    from: options.from || { name: 'Mark Riechers', address: 'you@gmail.com' },
+    subject: options.subject || 'Summarize my meeting notes from today',
+    ...options,
+  });
+}
+
+/**
  * Create a ParsedEmail object for testing generateMarkdown/generateFilename
  */
 export function createParsedEmail(overrides: Partial<{

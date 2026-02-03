@@ -8,7 +8,8 @@ crons = ["0 6 * * *"]  # Daily at 6 AM UTC (midnight CST)
 [vars]
 INBOX_FOLDER = "0 - INBOX"
 NEWSLETTER_FOLDER = "0 - INBOX/Newsletters"
-FORWARD_TO = ""  # Optional: forward a copy to your real inbox (e.g., "you@gmail.com")
+AGENT_FOLDER = "0 - INBOX/Agent Messages"
+FORWARD_TO = "you@gmail.com"  # Audit trail: every email forwarded here
 CF_ACCOUNT_ID = "your-cf-account-id"
 CF_ZONE_IDS = "zone-id-1,zone-id-2,zone-id-3"
 CF_ZONE_NAMES = "yourdomain.com,otherdomain.com,thirddomain.com"
