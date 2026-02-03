@@ -411,8 +411,8 @@ describe('generateNewsletterFilename', () => {
       newsletterName: 'Design Weekly',
     });
 
-    const filename = generateNewsletterFilename(email, '0 - INBOX/Newsletters');
-    expect(filename).toBe('0 - INBOX/Newsletters/2026-02-03 - Design Weekly - Issue #47- CSS Updates.md');
+    const filename = generateNewsletterFilename(email, '0 - INBOX/NEWSLETTERS');
+    expect(filename).toBe('0 - INBOX/NEWSLETTERS/2026-02-03 - Design Weekly - Issue #47- CSS Updates.md');
   });
 
   it('sanitizes unsafe characters in newsletter name', () => {
@@ -423,7 +423,7 @@ describe('generateNewsletterFilename', () => {
       newsletterName: 'News/Letter:Special',
     });
 
-    const filename = generateNewsletterFilename(email, 'Newsletters');
+    const filename = generateNewsletterFilename(email, 'NEWSLETTERS');
     expect(filename).not.toContain('/Letter');
     expect(filename).toContain('News-Letter-Special');
   });
@@ -558,8 +558,8 @@ describe('generateAgentMessageFilename', () => {
       date: new Date('2026-02-03T10:00:00Z'),
     });
 
-    const filename = generateAgentMessageFilename(email, '0 - INBOX/Agent Messages');
-    expect(filename).toBe('0 - INBOX/Agent Messages/2026-02-03 - Summarize meeting notes.md');
+    const filename = generateAgentMessageFilename(email, '0 - INBOX/AGENT MESSAGES');
+    expect(filename).toBe('0 - INBOX/AGENT MESSAGES/2026-02-03 - Summarize meeting notes.md');
   });
 
   it('sanitizes unsafe characters in subject', () => {

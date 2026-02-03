@@ -27,3 +27,6 @@ npm-debug.log*
 .env
 .env.local
 .env.*.local
+
+# Readwise archive (review before committing)
+Readwise_Archives/
