@@ -96,6 +96,21 @@ export function createICloudEmail(options: EmailFixtureOptions = {}): Email {
 }
 
 /**
+ * Create a newsletter-style email with List-Unsubscribe header
+ */
+export function createNewsletterEmail(options: EmailFixtureOptions = {}): Email {
+  return createMockEmail({
+    from: options.from || { name: 'Design Weekly', address: 'hello@designweekly.com' },
+    subject: options.subject || 'Issue #47: What\'s New in CSS',
+    ...options,
+    headers: [
+      ...(options.headers || []),
+      { key: 'list-unsubscribe', value: '<https://designweekly.com/unsubscribe>, <mailto:unsubscribe@designweekly.com>' },
+    ],
+  });
+}
+
+/**
  * Create a ParsedEmail object for testing generateMarkdown/generateFilename
  */
 export function createParsedEmail(overrides: Partial<{
@@ -105,6 +120,8 @@ export function createParsedEmail(overrides: Partial<{
   date: Date;
   body: string;
   source: 'gmail' | 'outlook' | 'icloud' | 'unknown';
+  isNewsletter: boolean;
+  newsletterName: string;
 }> = {}) {
   return {
     messageId: overrides.messageId || 'test-message-id',
@@ -113,5 +130,8 @@ export function createParsedEmail(overrides: Partial<{
     date: overrides.date || new Date('2025-01-15T10:30:00Z'),
     body: overrides.body || 'Test email body content',
     source: overrides.source || 'unknown' as const,
+    attachments: [],
+    isNewsletter: overrides.isNewsletter ?? false,
+    newsletterName: overrides.newsletterName ?? '',
   };
 }
