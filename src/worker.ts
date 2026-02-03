@@ -181,11 +181,11 @@ export default {
       switch (route) {
         case 'newsletter':
           markdown = generateNewsletterMarkdown(parsed);
-          filename = generateNewsletterFilename(parsed, env.NEWSLETTER_FOLDER || '0 - INBOX/Newsletters');
+          filename = generateNewsletterFilename(parsed, env.NEWSLETTER_FOLDER || '0 - INBOX/NEWSLETTERS');
           break;
         case 'agent':
           markdown = generateAgentMessageMarkdown(parsed);
-          filename = generateAgentMessageFilename(parsed, env.AGENT_FOLDER || '0 - INBOX/Agent Messages');
+          filename = generateAgentMessageFilename(parsed, env.AGENT_FOLDER || '0 - INBOX/AGENT MESSAGES');
           break;
         case 'task':
           markdown = generateMarkdown(parsed);
@@ -196,7 +196,7 @@ export default {
           // Catch-all: fall back to header-based detection
           if (parsed.isNewsletter) {
             markdown = generateNewsletterMarkdown(parsed);
-            filename = generateNewsletterFilename(parsed, env.NEWSLETTER_FOLDER || '0 - INBOX/Newsletters');
+            filename = generateNewsletterFilename(parsed, env.NEWSLETTER_FOLDER || '0 - INBOX/NEWSLETTERS');
           } else {
             markdown = generateMarkdown(parsed);
             filename = generateFilename(parsed, env.INBOX_FOLDER || '0 - INBOX');
@@ -738,7 +738,7 @@ async function generateEmailRoutingReport(env: Env): Promise<void> {
 
   const markdown = buildReportMarkdown(allEvents, dateStr, yesterday, now);
 
-  const filename = `0 - INBOX/Email Routing Reports/${dateStr} - Email Routing Report.md`;
+  const filename = `0 - INBOX/EMAIL ROUTING REPORTS/${dateStr} - Email Routing Report.md`;
   await env.OBSIDIAN_BUCKET.put(filename, markdown, {
     httpMetadata: { contentType: 'text/markdown; charset=utf-8' },
     customMetadata: { 'report-type': 'email-routing', 'created': now.toISOString() },
