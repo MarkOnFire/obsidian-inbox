@@ -13,6 +13,7 @@ export interface Env {
   OBSIDIAN_BUCKET: R2Bucket;
   INBOX_FOLDER: string;
   NEWSLETTER_FOLDER: string;
+  AGENT_FOLDER: string;
   FORWARD_TO: string;
   CF_API_TOKEN: string;
   CF_ACCOUNT_ID: string;
@@ -21,6 +22,31 @@ export interface Env {
 }
 
 export type EmailSource = 'gmail' | 'outlook' | 'icloud' | 'unknown';
+
+/**
+ * Route determined by the recipient address local part.
+ * Each address maps to a distinct processing pipeline.
+ */
+export type EmailRoute = 'task' | 'newsletter' | 'agent' | 'inbox';
+
+/**
+ * Extract the email route from the recipient address.
+ * The local part (before @) determines which pipeline to use:
+ *   email-to-obsidian → task
+ *   newsletters/newsletter → newsletter
+ *   claude → agent
+ *   anything else (including inbox) → inbox (catch-all)
+ */
+export function extractRoute(toAddress: string): EmailRoute {
+  const localPart = toAddress.split('@')[0].toLowerCase();
+  switch (localPart) {
+    case 'email-to-obsidian': return 'task';
+    case 'newsletters':
+    case 'newsletter':        return 'newsletter';
+    case 'claude':            return 'agent';
+    default:                  return 'inbox';
+  }
+}
 
 export interface ParsedEmail {
   messageId: string;
@@ -131,26 +157,52 @@ export default {
 
   async email(message: ForwardableEmailMessage, env: Env, ctx: ExecutionContext): Promise<void> {
     try {
-      console.log('Processing email, message ID will be assigned');
+      // Forward unconditionally for audit trail (before any processing)
+      if (env.FORWARD_TO) {
+        try {
+          await message.forward(env.FORWARD_TO);
+          console.log(`Audit copy forwarded to ${env.FORWARD_TO}`);
+        } catch (fwdError) {
+          console.warn('Failed to forward audit copy:', fwdError);
+        }
+      }
 
-      // Parse the incoming email with postal-mime
-      const parsed = await parseEmail(message);
+      // Determine route from recipient address
+      const route = extractRoute(message.to);
+      console.log(`Processing email to ${message.to} — route: ${route}`);
 
-      // Detect if this is a newsletter (List-Unsubscribe header)
-      const newsletter = parsed.isNewsletter;
+      // Parse the incoming email (route determines which Turndown service to use)
+      const parsed = await parseEmail(message, route);
 
-      // Generate markdown and filename based on email type
-      const markdown = newsletter
-        ? generateNewsletterMarkdown(parsed)
-        : generateMarkdown(parsed);
+      // Route to the correct pipeline
+      let markdown: string;
+      let filename: string;
 
-      const folder = newsletter
-        ? (env.NEWSLETTER_FOLDER || '0 - INBOX/Newsletters')
-        : (env.INBOX_FOLDER || '0 - INBOX');
-
-      const filename = newsletter
-        ? generateNewsletterFilename(parsed, folder)
-        : generateFilename(parsed, env.INBOX_FOLDER || '0 - INBOX');
+      switch (route) {
+        case 'newsletter':
+          markdown = generateNewsletterMarkdown(parsed);
+          filename = generateNewsletterFilename(parsed, env.NEWSLETTER_FOLDER || '0 - INBOX/Newsletters');
+          break;
+        case 'agent':
+          markdown = generateAgentMessageMarkdown(parsed);
+          filename = generateAgentMessageFilename(parsed, env.AGENT_FOLDER || '0 - INBOX/Agent Messages');
+          break;
+        case 'task':
+          markdown = generateMarkdown(parsed);
+          filename = generateFilename(parsed, env.INBOX_FOLDER || '0 - INBOX');
+          break;
+        case 'inbox':
+        default:
+          // Catch-all: fall back to header-based detection
+          if (parsed.isNewsletter) {
+            markdown = generateNewsletterMarkdown(parsed);
+            filename = generateNewsletterFilename(parsed, env.NEWSLETTER_FOLDER || '0 - INBOX/Newsletters');
+          } else {
+            markdown = generateMarkdown(parsed);
+            filename = generateFilename(parsed, env.INBOX_FOLDER || '0 - INBOX');
+          }
+          break;
+      }
 
       // Check if note already exists (deduplication)
       const existing = await env.OBSIDIAN_BUCKET.head(filename);
@@ -168,12 +220,13 @@ export default {
           'email-id': parsed.messageId,
           'email-from': parsed.from.email,
           'email-source': parsed.source,
-          'email-type': newsletter ? 'newsletter' : 'email',
+          'email-route': route,
+          'email-type': parsed.isNewsletter ? 'newsletter' : (route === 'agent' ? 'agent' : 'email'),
           'created': new Date().toISOString(),
         },
       });
 
-      console.log(`${newsletter ? 'Newsletter' : 'Email'} note created: ${parsed.messageId}`);
+      console.log(`[${route}] Note created: ${parsed.messageId} → ${filename}`);
 
       // Handle attachments
       if (parsed.attachments && parsed.attachments.length > 0) {
@@ -183,16 +236,6 @@ export default {
         );
         await Promise.all(attachmentPromises);
         console.log('All attachments saved.');
-      }
-
-      // Optionally forward a copy to another inbox
-      if (env.FORWARD_TO) {
-        try {
-          await message.forward(env.FORWARD_TO);
-          console.log(`Forwarded to ${env.FORWARD_TO}`);
-        } catch (fwdError) {
-          console.warn('Failed to forward email:', fwdError);
-        }
       }
 
     } catch (error) {
@@ -226,9 +269,13 @@ function sanitizeAttachmentFilename(filename: string): string {
 }
 
 /**
- * Parse email using postal-mime library
+ * Parse email using postal-mime library.
+ * The route parameter determines which Turndown service to use:
+ *   - 'newsletter' route → always newsletter Turndown (layout tables, tracker removal)
+ *   - 'inbox' route → detect via List-Unsubscribe header, then pick Turndown
+ *   - 'task' / 'agent' → standard Turndown
  */
-async function parseEmail(message: ForwardableEmailMessage): Promise<ParsedEmail> {
+async function parseEmail(message: ForwardableEmailMessage, route: EmailRoute = 'inbox'): Promise<ParsedEmail> {
   // Parse with postal-mime - it handles ReadableStream directly
   const email: Email = await PostalMime.parse(message.raw);
 
@@ -241,10 +288,13 @@ async function parseEmail(message: ForwardableEmailMessage): Promise<ParsedEmail
   // Parse date
   const emailDate = email.date ? new Date(email.date) : new Date();
 
-  // Detect newsletter before body conversion (affects which Turndown we use)
-  const newsletter = isNewsletter(email);
+  // Determine newsletter status based on route:
+  //   - 'newsletter' route → always a newsletter (address is the signal)
+  //   - 'inbox' catch-all → detect via List-Unsubscribe header
+  //   - other routes → not a newsletter
+  const newsletter = route === 'newsletter' || (route === 'inbox' && isNewsletter(email));
 
-  // Convert body to markdown — use newsletter Turndown for newsletter emails
+  // Convert body to markdown — use newsletter Turndown for newsletter content
   const body = newsletter
     ? convertNewsletterBodyToMarkdown(email)
     : convertBodyToMarkdown(email);
@@ -434,6 +484,53 @@ export function generateNewsletterFilename(email: ParsedEmail, newsletterFolder:
     .slice(0, 80);
 
   return `${newsletterFolder}/${date} - ${safeName} - ${safeSubject}.md`;
+}
+
+/**
+ * Generate agent message markdown (no tasks section, agent metadata).
+ * Messages sent to claude@* are captured for Phase 2 agent processing.
+ */
+export function generateAgentMessageMarkdown(email: ParsedEmail): string {
+  const createdDate = formatDate(email.date);
+  const fullDate = formatDateLong(email.date);
+
+  return `---
+tags:
+  - agent-message
+created: ${createdDate}
+from: ${email.from.email}
+subject: ${escapeYaml(email.subject)}
+email_id: ${email.messageId}
+source: ${email.source}
+status: pending
+---
+
+## Agent Message
+
+**From:** ${email.from.name} <${email.from.email}>
+**Date:** ${fullDate}
+
+---
+
+${email.body}
+`;
+}
+
+/**
+ * Generate filename for agent messages.
+ * Pattern: {AGENT_FOLDER}/{date} - {subject}.md
+ */
+export function generateAgentMessageFilename(email: ParsedEmail, agentFolder: string): string {
+  const date = formatDate(email.date);
+
+  const safeSubject = email.subject
+    .replace(/^(\[fwd:?\]|fwd:?)\s*/i, '')
+    .replace(/[/\\?%*:|"<>]/g, '-')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 100);
+
+  return `${agentFolder}/${date} - ${safeSubject}.md`;
 }
 
 /**

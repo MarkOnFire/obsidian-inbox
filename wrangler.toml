@@ -8,7 +8,8 @@ crons = ["0 6 * * *"]  # Daily at 6 AM UTC (midnight CST)
 [vars]
 INBOX_FOLDER = "0 - INBOX"
 NEWSLETTER_FOLDER = "0 - INBOX/Newsletters"
-FORWARD_TO = ""  # Optional: forward a copy to your real inbox (e.g., "you@gmail.com")
+AGENT_FOLDER = "0 - INBOX/Agent Messages"
+FORWARD_TO = "markriechers@gmail.com"  # Audit trail: every email forwarded here
 CF_ACCOUNT_ID = "8f65c588a74d91f889ac7aa0f8086d1e"
 CF_ZONE_IDS = "9c31d072099ca1e0cd3748926963293e,31a98ba54bfe32958f429f96470b51be,10a0f580a63e8a2ea204df93b37fe2c5"
 CF_ZONE_NAMES = "bymarkriechers.com,riechers.co,wondercabinetproductions.com"
