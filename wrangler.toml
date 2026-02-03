@@ -2,8 +2,17 @@ name = "email-to-obsidian"
 main = "src/worker.ts"
 compatibility_date = "2024-01-01"
 
+[triggers]
+crons = ["0 6 * * *"]  # Daily at 6 AM UTC (midnight CST)
+
 [vars]
 INBOX_FOLDER = "0 - INBOX"
+NEWSLETTER_FOLDER = "0 - INBOX/Newsletters"
+FORWARD_TO = ""  # Optional: forward a copy to your real inbox (e.g., "you@gmail.com")
+CF_ACCOUNT_ID = "8f65c588a74d91f889ac7aa0f8086d1e"
+CF_ZONE_IDS = "9c31d072099ca1e0cd3748926963293e,31a98ba54bfe32958f429f96470b51be,10a0f580a63e8a2ea204df93b37fe2c5"
+CF_ZONE_NAMES = "bymarkriechers.com,riechers.co,wondercabinetproductions.com"
+# CF_API_TOKEN stored as a secret: npx wrangler secret put CF_API_TOKEN
 
 [[r2_buckets]]
 binding = "OBSIDIAN_BUCKET"

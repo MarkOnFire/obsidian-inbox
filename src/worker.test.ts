@@ -12,6 +12,10 @@ import {
   generateFilename,
   generateMarkdown,
   detectEmailSource,
+  isNewsletter,
+  extractNewsletterName,
+  generateNewsletterMarkdown,
+  generateNewsletterFilename,
   type ParsedEmail,
   type EmailSource,
 } from './worker';
@@ -20,6 +24,7 @@ import {
   createGmailEmail,
   createOutlookEmail,
   createICloudEmail,
+  createNewsletterEmail,
   createParsedEmail,
 } from './test-utils/email-fixtures';
 
@@ -132,13 +137,13 @@ describe('generateMessageId', () => {
 });
 
 describe('generateFilename', () => {
-  it('generates correct filename format', () => {
+  it('generates correct filename format with TASKS FROM EMAIL subfolder', () => {
     const email = createParsedEmail({
       subject: 'Test Subject',
       date: new Date('2025-01-15T10:30:00Z'),
     });
     const filename = generateFilename(email, '0 - INBOX');
-    expect(filename).toBe('0 - INBOX/2025-01-15 - Test Subject.md');
+    expect(filename).toBe('0 - INBOX/TASKS FROM EMAIL/2025-01-15 - Test Subject.md');
   });
 
   it('sanitizes unsafe characters in subject', () => {
@@ -147,7 +152,7 @@ describe('generateFilename', () => {
       date: new Date('2025-01-15T10:30:00Z'),
     });
     const filename = generateFilename(email, 'INBOX');
-    expect(filename).toBe('INBOX/2025-01-15 - Test-Subject-With-Special-Chars.md');
+    expect(filename).toBe('INBOX/TASKS FROM EMAIL/2025-01-15 - Test-Subject-With-Special-Chars.md');
   });
 
   it('normalizes whitespace', () => {
@@ -156,7 +161,7 @@ describe('generateFilename', () => {
       date: new Date('2025-01-15T10:30:00Z'),
     });
     const filename = generateFilename(email, 'INBOX');
-    expect(filename).toBe('INBOX/2025-01-15 - Too many spaces.md');
+    expect(filename).toBe('INBOX/TASKS FROM EMAIL/2025-01-15 - Too many spaces.md');
   });
 
   it('truncates long subjects to 100 chars', () => {
@@ -166,9 +171,9 @@ describe('generateFilename', () => {
       date: new Date('2025-01-15T10:30:00Z'),
     });
     const filename = generateFilename(email, 'INBOX');
-    // Date is 10 chars, " - " is 3 chars, ".md" is 3 chars
-    // Subject should be truncated to 100 chars
-    expect(filename.length).toBeLessThanOrEqual('INBOX/'.length + 10 + 3 + 100 + 3);
+    // folder/ + TASKS FROM EMAIL/ + date + " - " + subject (max 100) + .md
+    const expectedMax = 'INBOX/'.length + 'TASKS FROM EMAIL/'.length + 10 + 3 + 100 + 3;
+    expect(filename.length).toBeLessThanOrEqual(expectedMax);
   });
 });
 
@@ -279,5 +284,169 @@ describe('detectEmailSource', () => {
     });
     // Should NOT detect as Outlook because we only match the exact header
     expect(detectEmailSource(email)).toBe('unknown');
+  });
+});
+
+// --- Newsletter Detection ---
+
+describe('isNewsletter', () => {
+  it('detects newsletter via List-Unsubscribe header', () => {
+    const email = createNewsletterEmail();
+    expect(isNewsletter(email)).toBe(true);
+  });
+
+  it('detects newsletter with case-insensitive header matching', () => {
+    const email = createMockEmail({
+      headers: [{ key: 'List-Unsubscribe', value: '<https://example.com/unsub>' }],
+    });
+    expect(isNewsletter(email)).toBe(true);
+  });
+
+  it('returns false for regular emails without List-Unsubscribe', () => {
+    const email = createMockEmail();
+    expect(isNewsletter(email)).toBe(false);
+  });
+
+  it('returns false for Gmail emails without List-Unsubscribe', () => {
+    const email = createGmailEmail();
+    expect(isNewsletter(email)).toBe(false);
+  });
+});
+
+describe('extractNewsletterName', () => {
+  it('extracts name from sender display name', () => {
+    const email = createNewsletterEmail({
+      from: { name: 'Design Weekly', address: 'hello@designweekly.com' },
+    });
+    expect(extractNewsletterName(email)).toBe('Design Weekly');
+  });
+
+  it('falls back to email local part when no display name', () => {
+    const email = createNewsletterEmail({
+      from: { address: 'newsletter@substack.com' },
+    });
+    expect(extractNewsletterName(email)).toBe('newsletter');
+  });
+
+  it('handles various newsletter sender formats', () => {
+    const email = createNewsletterEmail({
+      from: { name: 'The Morning Brew ☕', address: 'crew@morningbrew.com' },
+    });
+    expect(extractNewsletterName(email)).toBe('The Morning Brew ☕');
+  });
+});
+
+describe('generateNewsletterMarkdown', () => {
+  it('generates newsletter markdown with correct frontmatter', () => {
+    const email = createParsedEmail({
+      messageId: 'nl-123',
+      from: { name: 'Design Weekly', email: 'hello@designweekly.com' },
+      subject: 'Issue #47: CSS Updates',
+      date: new Date('2026-02-03T10:00:00Z'),
+      body: 'Newsletter content here',
+      source: 'unknown',
+      isNewsletter: true,
+      newsletterName: 'Design Weekly',
+    });
+
+    const markdown = generateNewsletterMarkdown(email);
+
+    expect(markdown).toContain('tags:');
+    expect(markdown).toContain('- newsletter');
+    expect(markdown).not.toContain('- email-task');
+    expect(markdown).toContain('newsletter_name: Design Weekly');
+    expect(markdown).toContain('status: unprocessed');
+    expect(markdown).toContain('from: hello@designweekly.com');
+    expect(markdown).toContain('email_id: nl-123');
+  });
+
+  it('does NOT include tasks section', () => {
+    const email = createParsedEmail({
+      isNewsletter: true,
+      newsletterName: 'Test Newsletter',
+    });
+
+    const markdown = generateNewsletterMarkdown(email);
+
+    expect(markdown).not.toContain('## Tasks in this note');
+    expect(markdown).not.toContain('- [ ] Review and process this email');
+  });
+
+  it('uses newsletter name in heading', () => {
+    const email = createParsedEmail({
+      from: { name: 'Design Weekly', email: 'hello@designweekly.com' },
+      subject: 'Issue #47',
+      isNewsletter: true,
+      newsletterName: 'Design Weekly',
+    });
+
+    const markdown = generateNewsletterMarkdown(email);
+
+    expect(markdown).toContain('## Design Weekly — Issue #47');
+  });
+
+  it('escapes YAML-problematic newsletter names', () => {
+    const email = createParsedEmail({
+      isNewsletter: true,
+      newsletterName: 'News: Daily Update',
+    });
+
+    const markdown = generateNewsletterMarkdown(email);
+    expect(markdown).toContain('newsletter_name: "News: Daily Update"');
+  });
+});
+
+describe('generateNewsletterFilename', () => {
+  it('generates newsletter filename with newsletter name prefix', () => {
+    const email = createParsedEmail({
+      from: { name: 'Design Weekly', email: 'hello@designweekly.com' },
+      subject: 'Issue #47: CSS Updates',
+      date: new Date('2026-02-03T10:00:00Z'),
+      isNewsletter: true,
+      newsletterName: 'Design Weekly',
+    });
+
+    const filename = generateNewsletterFilename(email, '0 - INBOX/Newsletters');
+    expect(filename).toBe('0 - INBOX/Newsletters/2026-02-03 - Design Weekly - Issue #47- CSS Updates.md');
+  });
+
+  it('sanitizes unsafe characters in newsletter name', () => {
+    const email = createParsedEmail({
+      subject: 'Test',
+      date: new Date('2026-02-03T10:00:00Z'),
+      isNewsletter: true,
+      newsletterName: 'News/Letter:Special',
+    });
+
+    const filename = generateNewsletterFilename(email, 'Newsletters');
+    expect(filename).not.toContain('/Letter');
+    expect(filename).toContain('News-Letter-Special');
+  });
+
+  it('truncates long newsletter names', () => {
+    const email = createParsedEmail({
+      subject: 'Short Subject',
+      date: new Date('2026-02-03T10:00:00Z'),
+      isNewsletter: true,
+      newsletterName: 'A'.repeat(80),
+    });
+
+    const filename = generateNewsletterFilename(email, 'NL');
+    // Newsletter name should be truncated to 40 chars
+    const namePart = filename.split(' - ')[1];
+    expect(namePart.length).toBeLessThanOrEqual(40);
+  });
+
+  it('strips FWD prefix from subject', () => {
+    const email = createParsedEmail({
+      subject: 'Fwd: Weekly Digest',
+      date: new Date('2026-02-03T10:00:00Z'),
+      isNewsletter: true,
+      newsletterName: 'Tech News',
+    });
+
+    const filename = generateNewsletterFilename(email, 'NL');
+    expect(filename).not.toContain('Fwd:');
+    expect(filename).toContain('Weekly Digest');
   });
 });
