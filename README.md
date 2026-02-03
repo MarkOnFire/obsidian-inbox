@@ -1,129 +1,49 @@
 # Cloudflare Email to Obsidian
 
-Forward starred/flagged emails from Gmail, Outlook, or iCloud Mail to automatically create task notes in your Obsidian PARA inbox.
+Route emails from multiple addresses into your Obsidian vault as structured markdown notes — tasks, newsletters, and agent messages each get their own pipeline.
 
-## Overview
-
-**The Problem:** You receive important emails that need action, but they get lost in your inbox. You want them in your Obsidian vault as actionable notes.
-
-**The Solution:** Set up email forwarding rules to send starred/flagged emails to a Cloudflare Email Worker, which parses the email and writes a markdown note directly to a Cloudflare R2 bucket. The [Remotely Save](https://github.com/remotely-save/remotely-save) Obsidian plugin syncs R2 to your vault.
+## How It Works
 
 ```
-Gmail/Outlook/iCloud → Forward Rules → inbox@yourdomain.com
-                                              ↓
-                              Cloudflare Email Worker (parse, format)
-                                              ↓
-                                    Cloudflare R2 Bucket
-                                              ↓
-                              Remotely Save Plugin (existing)
-                                              ↓
-                            Obsidian (Desktop, iOS, Android)
+Gmail / Outlook / iCloud
+        ↓ forwarding rules
+email-to-obsidian@domain ──→ Task note       → 0 - INBOX/TASKS FROM EMAIL/
+newsletters@domain ────────→ Newsletter note → 0 - INBOX/NEWSLETTERS/
+claude@domain ─────────────→ Agent message   → 0 - INBOX/AGENT MESSAGES/
+inbox@domain ──────────────→ Auto-detect     → (header-based routing)
+        ↓
+Cloudflare Email Worker (parse, convert, route)
+        ↓
+Cloudflare R2 Bucket
+        ↓
+Remotely Save plugin (existing)
+        ↓
+Obsidian (Desktop, iOS, Android)
 ```
 
-## Why This Approach?
+The recipient address determines the pipeline. Each address maps to a distinct markdown template, folder, and tag set. The `inbox@` catch-all falls back to header-based detection (e.g., `List-Unsubscribe` → newsletter).
 
-- **No OAuth complexity** - emails arrive via simple forwarding rules
-- **Free tier is generous** - 100K emails/day, 10GB R2 storage
-- **Works on mobile** - Remotely Save plugin supports iOS/Android
-- **Real-time** - emails processed in seconds
-- **Simple** - only one component to build: the Email Worker (~100-150 lines)
+## Email Routes
 
-## Prerequisites
+| Address | Route | Tag | Folder | Description |
+|---------|-------|-----|--------|-------------|
+| `email-to-obsidian@*` | `task` | `email-task` | `TASKS FROM EMAIL/` | Actionable emails with a task checkbox |
+| `newsletters@*` | `newsletter` | `newsletter` | `NEWSLETTERS/` | Newsletter content with layout cleanup |
+| `claude@*` | `agent` | `agent-message` | `AGENT MESSAGES/` | Messages for agent processing (`status: pending`) |
+| `inbox@*` | `inbox` | auto | auto | Catch-all: detects newsletters via headers, otherwise task |
 
-- Custom domain with DNS on Cloudflare (e.g., `yourdomain.com`)
-- Cloudflare account (free tier works)
-- Obsidian with [Remotely Save](https://github.com/remotely-save/remotely-save) plugin
-- Email accounts you want to forward from (Gmail, Outlook, iCloud, etc.)
+All routes work across all configured domains (e.g., `newsletters@yourdomain.com`, `newsletters@otherdomain.com`).
 
-## Setup
+## Note Templates
 
-### 1. Create R2 Bucket
+### Task Note (`email-to-obsidian@`)
 
-1. Log into [Cloudflare Dashboard](https://dash.cloudflare.com/)
-2. Go to **R2 Object Storage** → **Create bucket**
-3. Name: `obsidian-inbox` (or your preference)
-4. Click **Create bucket**
-
-### 2. Enable Email Routing
-
-1. Go to **Email** → **Email Routing**
-2. Add your domain if not already configured
-3. Under **Routing Rules**, you'll add a rule after deploying the worker
-
-### 3. Deploy the Email Worker
-
-```bash
-# Clone this repo
-git clone https://github.com/MarkOnFire/cloudflare-email-to-obsidian.git
-cd cloudflare-email-to-obsidian
-
-# Install dependencies
-npm install
-
-# Configure wrangler.toml with your R2 bucket name
-# Edit wrangler.toml and update the bucket_name
-
-# Deploy
-npx wrangler deploy
-```
-
-### 4. Configure Email Routing Rule
-
-1. Go to **Email** → **Email Routing** → **Routing Rules**
-2. Click **Create address**
-3. Custom address: `inbox` (or your preference)
-4. Action: **Send to a Worker**
-5. Select your deployed worker
-6. Click **Save**
-
-### 5. Set Up Remotely Save in Obsidian
-
-1. Install [Remotely Save](https://github.com/remotely-save/remotely-save) from Community Plugins
-2. Configure with your R2 bucket:
-   - Service: **S3 or S3-compatible**
-   - Endpoint: Your R2 endpoint (from R2 dashboard)
-   - Access Key ID: Create in R2 → Manage R2 API Tokens
-   - Secret Access Key: From the API token
-   - Bucket: `obsidian-inbox`
-   - Region: `auto`
-3. Set sync folder to `0 - INBOX/` (or your inbox folder)
-
-### 6. Configure Email Forwarding Rules
-
-#### Gmail
-1. Go to Gmail Settings → **See all settings** → **Forwarding and POP/IMAP**
-2. Add forwarding address: `inbox@yourdomain.com`
-3. Verify the forwarding address
-4. Create a filter:
-   - From Settings → **Filters and Blocked Addresses** → **Create a new filter**
-   - Condition: `is:starred`
-   - Action: **Forward to** `inbox@yourdomain.com`
-
-#### Outlook
-1. Go to Settings → **Mail** → **Rules**
-2. Create new rule:
-   - Condition: **Message is flagged**
-   - Action: **Forward to** `inbox@yourdomain.com`
-
-#### iCloud Mail
-1. Go to iCloud.com → Mail → Settings (gear icon)
-2. **Rules** → **Add a Rule**
-3. Condition: Based on your preference (e.g., specific sender, subject contains)
-4. Action: **Forward to** `inbox@yourdomain.com`
-
-## Note Format
-
-Each email creates a note like:
-
-**Filename:** `2025-12-13 - Follow up on Q4 budget review.md`
-
-**Content:**
 ```markdown
 ---
 tags:
   - all
   - email-task
-created: 2025-12-13
+created: 2026-02-03
 from: sender@example.com
 subject: Follow up on Q4 budget review
 email_id: abc123
@@ -136,76 +56,198 @@ source: gmail
 ---
 ## Email
 **From:** Manager Name <manager@example.com>
-**Date:** December 13, 2025
+**Date:** February 3, 2026
 **Subject:** Follow up on Q4 budget review
 
-Hi Mark,
-
-Can you review the Q4 budget projections and send feedback by Friday?
+[converted email body]
 
 ---
 ## Notes
+
 ```
+
+### Newsletter Note (`newsletters@`)
+
+```markdown
+---
+tags:
+  - newsletter
+created: 2026-02-03
+from: hello@designweekly.com
+newsletter_name: Design Weekly
+subject: "Issue #47: What's New in CSS"
+email_id: abc123
+source: gmail
+status: unprocessed
+---
+
+## Design Weekly — Issue #47: What's New in CSS
+
+**From:** Design Weekly <hello@designweekly.com>
+**Date:** February 3, 2026
+
+---
+
+[cleaned newsletter body — layout tables flattened, trackers stripped]
+```
+
+### Agent Message (`claude@`)
+
+```markdown
+---
+tags:
+  - agent-message
+created: 2026-02-03
+from: sender@example.com
+subject: Summarize my meeting notes from today
+email_id: abc123
+source: gmail
+status: pending
+---
+
+## Agent Message
+
+**From:** Your Name <you@gmail.com>
+**Date:** February 3, 2026
+
+---
+
+[email body]
+```
+
+## Features
+
+- **Address-based routing** — recipient address determines the pipeline, no manual tagging needed
+- **Newsletter HTML cleanup** — layout tables flattened to paragraphs, tracking pixels stripped, unsubscribe footers removed, CTA buttons converted to links
+- **Email source detection** — identifies Gmail, Outlook, and iCloud via headers
+- **Attachment handling** — saved to `_attachments/{messageId}/` in R2 with Obsidian wikilinks in the note
+- **Deduplication** — checks R2 for existing notes before writing (by filename)
+- **Audit forwarding** — every email forwarded to a Gmail address for debugging/backup (before processing)
+- **Daily routing report** — cron job queries Cloudflare GraphQL Analytics API for delivery stats across all zones
+- **YAML-safe frontmatter** — subjects with special characters are properly escaped
+
+## Prerequisites
+
+- Custom domain(s) with DNS on Cloudflare
+- Cloudflare account (free tier works)
+- Obsidian with [Remotely Save](https://github.com/remotely-save/remotely-save) plugin
+- Email clients configured with forwarding rules
+
+## Setup
+
+### 1. Create R2 Bucket
+
+1. [Cloudflare Dashboard](https://dash.cloudflare.com/) → **R2 Object Storage** → **Create bucket**
+2. Name: `obsidian-inbox`
+
+### 2. Enable Email Routing
+
+1. Dashboard → **Email** → **Email Routing** → enable for your domain
+2. Create routing rules for each address you want to use:
+   - `email-to-obsidian` → Send to Worker
+   - `newsletters` → Send to Worker
+   - `claude` → Send to Worker
+   - `inbox` → Send to Worker (catch-all)
+
+### 3. Deploy
+
+```bash
+git clone https://github.com/MarkOnFire/cloudflare-email-to-obsidian.git
+cd cloudflare-email-to-obsidian
+npm install
+
+# Edit wrangler.toml — update bucket name, folders, domains
+# Set the Cloudflare API token for the daily routing report:
+npx wrangler secret put CF_API_TOKEN
+
+npx wrangler deploy
+```
+
+### 4. Configure Remotely Save
+
+1. Install [Remotely Save](https://github.com/remotely-save/remotely-save) in Obsidian
+2. Service: **S3 or S3-compatible**
+3. Endpoint: your R2 endpoint (from R2 dashboard → bucket settings)
+4. Create an R2 API token (R2 → Manage R2 API Tokens) for Access Key / Secret
+5. Bucket: `obsidian-inbox`, Region: `auto`
+
+### 5. Set Up Forwarding Rules
+
+#### Gmail
+1. Settings → Forwarding → add `email-to-obsidian@yourdomain.com` and verify
+2. Create a filter: `is:starred` → Forward to the address
+
+#### Outlook
+1. Settings → Mail → Rules → new rule
+2. Condition: **Message is flagged** → Forward to the address
+
+#### Duck.com (newsletters)
+Forward newsletters to `newsletters@yourdomain.com` via Duck Address aliases.
 
 ## Configuration
 
-Edit `wrangler.toml` to customize:
+`wrangler.toml`:
 
 ```toml
 [vars]
-INBOX_FOLDER = "0 - INBOX"  # Target folder in vault
+INBOX_FOLDER = "0 - INBOX"
+NEWSLETTER_FOLDER = "0 - INBOX/NEWSLETTERS"
+AGENT_FOLDER = "0 - INBOX/AGENT MESSAGES"
+FORWARD_TO = "you@gmail.com"       # Audit trail forwarding
+CF_ACCOUNT_ID = "your-account-id"
+CF_ZONE_IDS = "zone1,zone2"        # For daily routing report
+CF_ZONE_NAMES = "domain1.com,domain2.com"
+
+[triggers]
+crons = ["0 6 * * *"]  # Daily routing report at 6 AM UTC
 ```
+
+`CF_API_TOKEN` is stored as a Wrangler secret (not in toml).
 
 ## Development
 
 ```bash
-# Install dependencies
-npm install
-
-# Run locally
-npx wrangler dev
-
-# Deploy
-npx wrangler deploy
+npm install          # Install dependencies
+npm run dev          # Local dev server
+npm test             # Run tests (63 tests)
+npm run typecheck    # TypeScript check
+npm run test:watch   # Watch mode
+npm run test:coverage # Coverage report
 ```
+
+### Branch Strategy
+
+- **`dev`** — local development branch; CI runs test + typecheck on push
+- **`main`** — production; CI runs test + typecheck + deploy to Cloudflare on push
+- `main` is protected: requires a PR with passing status checks, no direct pushes
+
+### CI/CD
+
+GitHub Actions (`.github/workflows/ci.yml`):
+
+1. **Test & Typecheck** — runs on every push to `dev` or `main`, and on PRs to `main`
+2. **Deploy to Cloudflare** — runs only on push to `main` (after tests pass)
+
+Secrets required: `CLOUDFLARE_API_TOKEN`
 
 ## Cost
 
-| Component | Cost |
-|-----------|------|
-| Cloudflare Email Routing | Free (100K emails/day) |
-| Cloudflare Workers | Free (100K requests/day) |
-| Cloudflare R2 | Free (10GB storage, 1M Class A ops/month) |
+| Component | Free Tier |
+|-----------|-----------|
+| Cloudflare Email Routing | 100K emails/day |
+| Cloudflare Workers | 100K requests/day |
+| Cloudflare R2 | 10GB storage, 1M Class A ops/month |
 | **Total** | **$0** |
-
-Your typical Obsidian vault is well under 10GB. Email notes are tiny.
 
 ## Limitations
 
-- **One-way sync:** Email → Obsidian only. Completing a task in Obsidian doesn't update the email.
-- **No attachments:** Attachment names are listed but files aren't downloaded. Use the original email link.
-- **Forwarding required:** You must set up forwarding rules in each email client.
-
-## Troubleshooting
-
-### Emails not arriving
-1. Check Cloudflare Email Routing is enabled for your domain
-2. Verify the routing rule points to your worker
-3. Check worker logs in Cloudflare dashboard
-
-### Notes not syncing to Obsidian
-1. Verify Remotely Save is configured correctly
-2. Check R2 bucket has the files (view in Cloudflare dashboard)
-3. Ensure sync folder matches where worker writes notes
-
-### Duplicate notes
-- Each email has a unique ID in frontmatter
-- Worker checks for existing files before writing
-- If duplicates occur, check R2 bucket directly
+- **One-way sync** — email → Obsidian only. Completing a task in Obsidian doesn't affect the email.
+- **No inline images** — attachment filenames are linked but images aren't embedded in the note body.
+- **Newsletter cleanup is heuristic** — layout extraction works well for most newsletter templates but edge cases exist.
 
 ## Prior Art
 
-This project evolved from an OAuth-based Obsidian plugin approach (see [obsidian-email-to-para](https://github.com/MarkOnFire/obsidian-email-to-para) - archived). The OAuth approach required complex setup with Google Cloud Console and Azure Portal. This Cloudflare approach is simpler and works on mobile.
+Evolved from an OAuth-based Obsidian plugin ([obsidian-email-to-para](https://github.com/MarkOnFire/obsidian-email-to-para) — archived). That approach required Google Cloud Console and Azure Portal setup. This Cloudflare approach is simpler, cheaper, and works on mobile.
 
 ## License
 
