@@ -15,10 +15,10 @@ interface EmailFixtureOptions {
 }
 
 /**
- * Create a Header object with required originalKey property
+ * Create a Header object matching the postal-mime Header type
  */
 function createHeader(key: string, value: string): Header {
-  return { key: key.toLowerCase(), originalKey: key, value };
+  return { key: key.toLowerCase(), value };
 }
 
 /**
