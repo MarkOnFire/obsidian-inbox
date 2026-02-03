@@ -23,7 +23,7 @@
   "author": "Mark Riechers",
   "license": "MIT",
   "dependencies": {
-    "postal-mime": "^2.4.1",
+    "postal-mime": "^2.7.3",
     "turndown": "^7.2.0"
   },
   "devDependencies": {
