@@ -460,38 +460,38 @@ describe('generateNewsletterFilename', () => {
 
 describe('extractRoute', () => {
   it('routes email-to-obsidian to task pipeline', () => {
-    expect(extractRoute('email-to-obsidian@yourdomain.com')).toBe('task');
-    expect(extractRoute('email-to-obsidian@otherdomain.com')).toBe('task');
-    expect(extractRoute('email-to-obsidian@thirddomain.com')).toBe('task');
+    expect(extractRoute('email-to-obsidian@example.com')).toBe('task');
+    expect(extractRoute('email-to-obsidian@example.org')).toBe('task');
+    expect(extractRoute('email-to-obsidian@example.net')).toBe('task');
   });
 
   it('routes newsletters to newsletter pipeline', () => {
-    expect(extractRoute('newsletters@yourdomain.com')).toBe('newsletter');
-    expect(extractRoute('newsletters@otherdomain.com')).toBe('newsletter');
+    expect(extractRoute('newsletters@example.com')).toBe('newsletter');
+    expect(extractRoute('newsletters@example.org')).toBe('newsletter');
   });
 
   it('accepts singular newsletter alias', () => {
-    expect(extractRoute('newsletter@yourdomain.com')).toBe('newsletter');
+    expect(extractRoute('newsletter@example.com')).toBe('newsletter');
   });
 
   it('routes claude to agent pipeline', () => {
-    expect(extractRoute('claude@yourdomain.com')).toBe('agent');
-    expect(extractRoute('claude@otherdomain.com')).toBe('agent');
+    expect(extractRoute('claude@example.com')).toBe('agent');
+    expect(extractRoute('claude@example.org')).toBe('agent');
   });
 
   it('routes inbox to catch-all', () => {
-    expect(extractRoute('inbox@yourdomain.com')).toBe('inbox');
+    expect(extractRoute('inbox@example.com')).toBe('inbox');
   });
 
   it('routes unknown addresses to catch-all', () => {
-    expect(extractRoute('random@yourdomain.com')).toBe('inbox');
+    expect(extractRoute('random@example.com')).toBe('inbox');
     expect(extractRoute('support@example.com')).toBe('inbox');
   });
 
   it('is case-insensitive', () => {
-    expect(extractRoute('EMAIL-TO-OBSIDIAN@yourdomain.com')).toBe('task');
-    expect(extractRoute('Newsletters@otherdomain.com')).toBe('newsletter');
-    expect(extractRoute('Claude@yourdomain.com')).toBe('agent');
+    expect(extractRoute('EMAIL-TO-OBSIDIAN@example.com')).toBe('task');
+    expect(extractRoute('Newsletters@example.org')).toBe('newsletter');
+    expect(extractRoute('Claude@example.com')).toBe('agent');
   });
 });
 
@@ -501,7 +501,7 @@ describe('generateAgentMessageMarkdown', () => {
   it('generates markdown with agent-message tag and pending status', () => {
     const email = createParsedEmail({
       messageId: 'agent-123',
-      from: { name: 'Mark Riechers', email: 'you@gmail.com' },
+      from: { name: 'Test User', email: 'user@example.com' },
       subject: 'Summarize my meeting notes',
       date: new Date('2026-02-03T10:00:00Z'),
       body: 'Please summarize the notes from today.',
@@ -515,7 +515,7 @@ describe('generateAgentMessageMarkdown', () => {
     expect(markdown).not.toContain('- email-task');
     expect(markdown).not.toContain('- newsletter');
     expect(markdown).toContain('status: pending');
-    expect(markdown).toContain('from: you@gmail.com');
+    expect(markdown).toContain('from: user@example.com');
     expect(markdown).toContain('email_id: agent-123');
     expect(markdown).toContain('source: gmail');
   });
@@ -530,14 +530,14 @@ describe('generateAgentMessageMarkdown', () => {
 
   it('includes Agent Message heading and body', () => {
     const email = createParsedEmail({
-      from: { name: 'Mark Riechers', email: 'mark@example.com' },
+      from: { name: 'Test User', email: 'user@example.com' },
       body: 'Do the thing please.',
     });
 
     const markdown = generateAgentMessageMarkdown(email);
 
     expect(markdown).toContain('## Agent Message');
-    expect(markdown).toContain('**From:** Mark Riechers <mark@example.com>');
+    expect(markdown).toContain('**From:** Test User <user@example.com>');
     expect(markdown).toContain('Do the thing please.');
   });
 

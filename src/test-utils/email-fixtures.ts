@@ -115,7 +115,7 @@ export function createNewsletterEmail(options: EmailFixtureOptions = {}): Email 
  */
 export function createAgentMessageEmail(options: EmailFixtureOptions = {}): Email {
   return createMockEmail({
-    from: options.from || { name: 'Mark Riechers', address: 'you@gmail.com' },
+    from: options.from || { name: 'Test User', address: 'user@example.com' },
     subject: options.subject || 'Summarize my meeting notes from today',
     ...options,
   });

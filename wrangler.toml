@@ -9,11 +9,12 @@ crons = ["0 6 * * *"]  # Daily at 6 AM UTC (midnight CST)
 INBOX_FOLDER = "0 - INBOX"
 NEWSLETTER_FOLDER = "0 - INBOX/NEWSLETTERS"
 AGENT_FOLDER = "0 - INBOX/AGENT MESSAGES"
-FORWARD_TO = "you@gmail.com"  # Audit trail: every email forwarded here
-CF_ACCOUNT_ID = "your-cf-account-id"
-CF_ZONE_IDS = "zone-id-1,zone-id-2,zone-id-3"
-CF_ZONE_NAMES = "yourdomain.com,otherdomain.com,thirddomain.com"
-# CF_API_TOKEN stored as a secret: npx wrangler secret put CF_API_TOKEN
+# Personal/infrastructure values stored as Wrangler secrets:
+#   npx wrangler secret put FORWARD_TO
+#   npx wrangler secret put CF_ACCOUNT_ID
+#   npx wrangler secret put CF_ZONE_IDS
+#   npx wrangler secret put CF_ZONE_NAMES
+#   npx wrangler secret put CF_API_TOKEN
 
 [[r2_buckets]]
 binding = "OBSIDIAN_BUCKET"

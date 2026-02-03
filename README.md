@@ -98,7 +98,7 @@ status: unprocessed
 tags:
   - agent-message
 created: 2026-02-03
-from: you@gmail.com
+from: sender@example.com
 subject: Summarize my meeting notes from today
 email_id: abc123
 source: gmail
@@ -107,7 +107,7 @@ status: pending
 
 ## Agent Message
 
-**From:** Mark Riechers <you@gmail.com>
+**From:** Your Name <you@gmail.com>
 **Date:** February 3, 2026
 
 ---
