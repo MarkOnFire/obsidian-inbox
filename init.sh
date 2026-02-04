@@ -1,12 +1,12 @@
 #!/bin/bash
-# init.sh - Bootstrap development environment for cloudflare-email-to-obsidian
+# init.sh - Bootstrap development environment for obsidian-inbox
 #
 # Run this at the start of every development session to ensure
 # consistent environment state.
 
 set -e
 
-echo "=== Cloudflare Email to Obsidian - Init ==="
+echo "=== Obsidian Inbox - Init ==="
 
 # Check Node.js
 if ! command -v node &> /dev/null; then
@@ -40,7 +40,7 @@ fi
 
 # Check for required files
 echo "Checking project structure..."
-required_files=("src/worker.ts" "wrangler.toml" "package.json" "feature_list.json" "claude-progress.txt")
+required_files=("src/worker.ts" "wrangler.toml" "package.json" "planning/progress.md" "planning/backlog.md")
 for file in "${required_files[@]}"; do
     if [[ -f "$file" ]]; then
         echo "  ✓ $file"
@@ -53,7 +53,7 @@ echo ""
 echo "=== Init Complete ==="
 echo ""
 echo "Next steps:"
-echo "  1. Read claude-progress.txt for context"
-echo "  2. Check feature_list.json for next pending feature"
+echo "  1. Read planning/progress.md for context"
+echo "  2. Check planning/backlog.md for pending work"
 echo "  3. Run 'npm run dev' for local development"
 echo ""

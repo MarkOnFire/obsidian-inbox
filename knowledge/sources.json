@@ -1,0 +1,72 @@
+{
+  "project": "obsidian-inbox",
+  "updated": "2026-02-03",
+  "sources": [
+    {
+      "topic": "cloudflare",
+      "files": [
+        "cloudflare/cloudflare-email-workers.md",
+        "cloudflare/cloudflare-email-workers-runtime-api.md",
+        "cloudflare/r2-api.md",
+        "cloudflare/r2-workers-api.md",
+        "cloudflare/wrangler-cli.md"
+      ],
+      "urls": [
+        "https://developers.cloudflare.com/email-routing/email-workers/",
+        "https://developers.cloudflare.com/email-routing/email-workers/runtime-api/",
+        "https://developers.cloudflare.com/r2/",
+        "https://developers.cloudflare.com/r2/api/workers/workers-api-reference/",
+        "https://developers.cloudflare.com/workers/wrangler/"
+      ],
+      "scraped_date": "2025-12-22"
+    },
+    {
+      "topic": "email-parsing",
+      "files": [
+        "postal-mime.md"
+      ],
+      "urls": [
+        "https://github.com/nickelcase/postal-mime"
+      ],
+      "scraped_date": "2025-12-22"
+    },
+    {
+      "topic": "markdown-conversion",
+      "files": [
+        "turndown.md"
+      ],
+      "urls": [
+        "https://github.com/mixmark-io/turndown"
+      ],
+      "scraped_date": "2025-12-22"
+    },
+    {
+      "topic": "obsidian-sync",
+      "files": [
+        "remotely-save.md"
+      ],
+      "urls": [
+        "https://github.com/remotely-save/remotely-save"
+      ],
+      "scraped_date": "2025-12-22"
+    },
+    {
+      "topic": "obsidian",
+      "files": [
+        "obsidian/"
+      ],
+      "urls": [],
+      "scraped_date": "2025-12-22",
+      "notes": "General Obsidian documentation and patterns"
+    },
+    {
+      "topic": "claude",
+      "files": [
+        "claude/"
+      ],
+      "urls": [],
+      "scraped_date": "2025-12-16",
+      "notes": "Claude agent development patterns"
+    }
+  ]
+}

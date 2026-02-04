@@ -1,23 +1,131 @@
-# Cloudflare Email to Obsidian
+# Obsidian Inbox
 
-> **See [AGENTS.md](./AGENTS.md)** for complete project instructions.
+## Project Overview
 
-## Claude-Specific Notes
+A Cloudflare Email Worker that receives forwarded emails and creates markdown notes in an R2 bucket for sync to Obsidian via the Remotely Save plugin.
 
-This file provides Claude Code-specific guidance when working with this repository. All shared project documentation, commands, conventions, and guardrails are in AGENTS.md.
+**Architecture:**
+```
+Gmail/Outlook/iCloud -> Forward Rules -> inbox@yourdomain.com
+                                              |
+                              Cloudflare Email Worker (this project)
+                                              |
+                                    Cloudflare R2 Bucket
+                                              |
+                              Remotely Save Plugin -> Obsidian
+```
 
-### Important Reminders
+## Technical Stack
 
-1. **Session context preservation**: Always read `claude-progress.txt` at session start to understand previous work. Update it at session end with a summary of what was accomplished.
+- **Runtime:** Cloudflare Workers (Email Workers)
+- **Storage:** Cloudflare R2 (S3-compatible)
+- **Email Parsing:** `postal-mime` - parses RFC822 emails in Workers
+- **HTML to Markdown:** `turndown` - converts HTML email bodies
+- **Sync:** Remotely Save plugin (external, not part of this project)
+- **Testing:** Vitest + @cloudflare/vitest-pool-workers
 
-2. **Feature tracking**: Check `feature_list.json` for pending work. Mark features complete with `passes: true` only after testing.
+## Development Commands
 
-3. **Testing workflow**: Since this is a Cloudflare Email Worker, local testing requires wrangler email simulation. For real validation, deploy and send test emails.
+```bash
+npm install          # Install dependencies
+npm run dev          # Local development with wrangler
+npm run deploy       # Deploy to Cloudflare
+npm run tail         # Stream live logs
+npm run typecheck    # TypeScript type checking
+npm test             # Run tests once
+npm run test:watch   # Run tests in watch mode
+npm run test:coverage # Run with coverage report
+```
 
-4. **R2 API familiarity**: The worker uses Cloudflare R2 bucket bindings. R2 is S3-compatible but has Workers-specific APIs. Reference `knowledge/cloudflare/` for API details.
+## Key Files
 
-5. **Email parsing**: Use `postal-mime` for parsing RFC822 format - don't attempt to write custom MIME parsers. See `knowledge/postal-mime.md` for library documentation.
+| File | Purpose |
+|------|---------|
+| `src/worker.ts` | Main Email Worker - receives emails, parses, writes to R2 |
+| `wrangler.toml` | Cloudflare configuration - R2 bindings, env vars |
+| `templates/email-task-template.md` | Reference note format |
 
-6. **Commit conventions**: Include agent attribution in commits following workspace standards (see AGENTS.md for reference to conventions).
+## Environment Variables
 
-7. **Environment safety**: This project processes email content. Be careful with logging to avoid exposing sensitive data in Cloudflare logs.
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `INBOX_FOLDER` | Target folder in vault | `0 - INBOX` |
+| `OBSIDIAN_BUCKET` | R2 bucket binding | (required) |
+
+## Conventions
+
+### Note Format
+Notes are created with YAML frontmatter:
+```markdown
+---
+tags:
+  - all
+  - email-task
+created: YYYY-MM-DD
+from: sender@example.com
+subject: Email subject
+email_id: unique-message-id
+source: gmail|outlook|icloud|unknown
+---
+
+## Tasks in this note
+- [ ] Review and process this email
+
+---
+## Email
+**From:** Name <email@example.com>
+**Date:** Full date string
+**Subject:** Subject line
+
+[Markdown-converted email body]
+
+---
+## Notes
+```
+
+### File Naming
+`{INBOX_FOLDER}/{YYYY-MM-DD} - {sanitized subject}.md`
+
+Subject sanitization: Replace `/\?%*:|"<>` with `-`, limit to 100 chars.
+
+### Email Source Detection
+- Gmail: `x-gm-message-state` header present
+- Outlook: `x-ms-exchange-organization-authas` header present
+- iCloud: `received` header contains `apple.com` or `icloud.com`
+
+### Git Commits
+Follow workspace commit conventions. See `~/Developer/the-lodge/conventions/COMMIT_CONVENTIONS.md`.
+
+## Guardrails
+
+### Must Do
+- Parse emails with `postal-mime` (don't write custom MIME parsing)
+- Convert HTML to Markdown with `turndown`
+- Check for existing file before writing (deduplication)
+- Sanitize filenames for cross-platform compatibility
+
+### Must Not
+- Store sensitive data in logs (use messageId only, no email addresses/subjects)
+- Fail silently - log errors for debugging
+- Create duplicate notes for same email
+- Modify R2 bucket structure outside INBOX_FOLDER
+
+## Testing
+
+- **Unit tests:** Vitest with Cloudflare Workers pool (33 tests covering all pure functions)
+- **Manual E2E:** Deploy to Cloudflare, send test emails, verify notes in R2
+
+## Planning
+
+Session progress, backlog, and planning artifacts are in `planning/`.
+
+- Progress log: `planning/progress.md`
+- Backlog: `planning/backlog.md`
+
+## Knowledge Resources
+
+Documentation in `knowledge/` folder:
+- `cloudflare/` - Email Workers, R2 API, Wrangler CLI
+- `postal-mime.md` - Email parsing library
+- `turndown.md` - HTML to Markdown conversion
+- `remotely-save.md` - Obsidian sync plugin

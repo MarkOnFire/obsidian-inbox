@@ -1,4 +1,4 @@
-# Cloudflare Email to Obsidian
+# Obsidian Inbox
 
 Route emails from multiple addresses into your Obsidian vault as structured markdown notes — tasks, newsletters, and agent messages each get their own pipeline.
 
@@ -152,8 +152,8 @@ status: pending
 ### 3. Deploy
 
 ```bash
-git clone https://github.com/MarkOnFire/cloudflare-email-to-obsidian.git
-cd cloudflare-email-to-obsidian
+git clone https://github.com/MarkOnFire/obsidian-inbox.git
+cd obsidian-inbox
 npm install
 
 # Edit wrangler.toml — update bucket name, folders, domains
