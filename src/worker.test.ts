@@ -14,8 +14,10 @@ import {
   detectEmailSource,
   isNewsletter,
   extractNewsletterName,
-  generateNewsletterMarkdown,
+  generateNewsletterSidecarMarkdown,
   generateNewsletterFilename,
+  generateNewsletterBaseFilename,
+  cleanNewsletterHtml,
   extractRoute,
   generateAgentMessageMarkdown,
   generateAgentMessageFilename,
@@ -341,20 +343,19 @@ describe('extractNewsletterName', () => {
   });
 });
 
-describe('generateNewsletterMarkdown', () => {
-  it('generates newsletter markdown with correct frontmatter', () => {
+describe('generateNewsletterSidecarMarkdown', () => {
+  it('generates sidecar with correct frontmatter', () => {
     const email = createParsedEmail({
       messageId: 'nl-123',
       from: { name: 'Design Weekly', email: 'hello@designweekly.com' },
       subject: 'Issue #47: CSS Updates',
       date: new Date('2026-02-03T10:00:00Z'),
-      body: 'Newsletter content here',
       source: 'unknown',
       isNewsletter: true,
       newsletterName: 'Design Weekly',
     });
 
-    const markdown = generateNewsletterMarkdown(email);
+    const markdown = generateNewsletterSidecarMarkdown(email, 'newsletter.html');
 
     expect(markdown).toContain('tags:');
     expect(markdown).toContain('- newsletter');
@@ -365,13 +366,24 @@ describe('generateNewsletterMarkdown', () => {
     expect(markdown).toContain('email_id: nl-123');
   });
 
+  it('embeds HTML file via wikilink', () => {
+    const email = createParsedEmail({
+      isNewsletter: true,
+      newsletterName: 'Test Newsletter',
+    });
+
+    const markdown = generateNewsletterSidecarMarkdown(email, '2025-01-15 - Test Newsletter - Test Subject.html');
+
+    expect(markdown).toContain('![[2025-01-15 - Test Newsletter - Test Subject.html]]');
+  });
+
   it('does NOT include tasks section', () => {
     const email = createParsedEmail({
       isNewsletter: true,
       newsletterName: 'Test Newsletter',
     });
 
-    const markdown = generateNewsletterMarkdown(email);
+    const markdown = generateNewsletterSidecarMarkdown(email, 'test.html');
 
     expect(markdown).not.toContain('## Tasks in this note');
     expect(markdown).not.toContain('- [ ] Review and process this email');
@@ -385,7 +397,7 @@ describe('generateNewsletterMarkdown', () => {
       newsletterName: 'Design Weekly',
     });
 
-    const markdown = generateNewsletterMarkdown(email);
+    const markdown = generateNewsletterSidecarMarkdown(email, 'test.html');
 
     expect(markdown).toContain('## Design Weekly — Issue #47');
   });
@@ -396,8 +408,33 @@ describe('generateNewsletterMarkdown', () => {
       newsletterName: 'News: Daily Update',
     });
 
-    const markdown = generateNewsletterMarkdown(email);
+    const markdown = generateNewsletterSidecarMarkdown(email, 'test.html');
     expect(markdown).toContain('newsletter_name: "News: Daily Update"');
+  });
+
+  it('falls back to body text when no HTML file', () => {
+    const email = createParsedEmail({
+      isNewsletter: true,
+      newsletterName: 'Text Newsletter',
+      body: 'Plain text content',
+    });
+
+    const markdown = generateNewsletterSidecarMarkdown(email, null);
+
+    expect(markdown).not.toContain('![[');
+    expect(markdown).toContain('Plain text content');
+  });
+
+  it('shows placeholder when no HTML and no body', () => {
+    const email = createParsedEmail({
+      isNewsletter: true,
+      newsletterName: 'Empty Newsletter',
+      body: '',
+    });
+
+    const markdown = generateNewsletterSidecarMarkdown(email, null);
+
+    expect(markdown).toContain('*No newsletter content*');
   });
 });
 
@@ -453,6 +490,234 @@ describe('generateNewsletterFilename', () => {
     const filename = generateNewsletterFilename(email, 'NL');
     expect(filename).not.toContain('Fwd:');
     expect(filename).toContain('Weekly Digest');
+  });
+});
+
+// --- Newsletter HTML Cleaning ---
+
+describe('cleanNewsletterHtml', () => {
+  it('strips script tags and contents', () => {
+    const html = '<p>Hello</p><script>alert("x")</script><p>World</p>';
+    const cleaned = cleanNewsletterHtml(html);
+
+    expect(cleaned).not.toContain('<script');
+    expect(cleaned).not.toContain('alert');
+    expect(cleaned).toContain('<p>Hello</p>');
+    expect(cleaned).toContain('<p>World</p>');
+  });
+
+  it('strips tracking pixels (1x1 images)', () => {
+    const html = '<p>Content</p><img width="1" height="1" src="https://example.com/pixel.png">';
+    const cleaned = cleanNewsletterHtml(html);
+
+    expect(cleaned).not.toContain('<img');
+    expect(cleaned).toContain('<p>Content</p>');
+  });
+
+  it('strips zero-dimension images', () => {
+    const html = '<img width="0" src="https://example.com/spacer.gif"><p>Text</p>';
+    const cleaned = cleanNewsletterHtml(html);
+
+    expect(cleaned).not.toContain('<img');
+    expect(cleaned).toContain('<p>Text</p>');
+  });
+
+  it('strips tracker images by domain pattern', () => {
+    const trackerUrls = [
+      'https://open.substack.com/p/tracking',
+      'https://pixel.example.com/img',
+      'https://track.mailsender.com/open',
+      'https://beacon.krxd.net/pixel',
+      'https://email.mg.example.com/o/abc',
+      'https://example.com/o.gif',
+      'https://example.com/t.gif',
+      'https://example.com/spacer.gif',
+      'https://list-manage.com/track/click?u=abc123',
+    ];
+
+    for (const url of trackerUrls) {
+      const html = `<p>Content</p><img src="${url}" />`;
+      const cleaned = cleanNewsletterHtml(html);
+      expect(cleaned).not.toContain(url);
+    }
+  });
+
+  it('preserves regular images', () => {
+    const html = '<img src="https://cdn.example.com/hero-image.jpg" width="600" height="400">';
+    const cleaned = cleanNewsletterHtml(html);
+
+    expect(cleaned).toContain('hero-image.jpg');
+  });
+
+  it('preserves CSS and style blocks', () => {
+    const html = '<style>.header { color: red; }</style><div class="header">Hello</div>';
+    const cleaned = cleanNewsletterHtml(html);
+
+    expect(cleaned).toContain('<style>');
+    expect(cleaned).toContain('color: red');
+  });
+
+  it('preserves layout tables', () => {
+    const html = '<table><tr><td>Column 1</td><td>Column 2</td></tr></table>';
+    const cleaned = cleanNewsletterHtml(html);
+
+    expect(cleaned).toContain('<table>');
+    expect(cleaned).toContain('Column 1');
+    expect(cleaned).toContain('Column 2');
+  });
+
+  it('strips unsubscribe footers', () => {
+    const html = '<p>Content</p><div class="footer"><p>Unsubscribe here</p></div>';
+    const cleaned = cleanNewsletterHtml(html);
+
+    expect(cleaned).toContain('Content');
+    expect(cleaned).not.toContain('Unsubscribe here');
+  });
+
+  it('returns empty string for empty input', () => {
+    expect(cleanNewsletterHtml('')).toBe('');
+  });
+
+  it('strips MSO/IE conditional comments', () => {
+    const html = '<div>Before</div><!--[if mso | IE]><table width="600"><tr><td>MSO only</td></tr></table><![endif]--><div>After</div>';
+    const cleaned = cleanNewsletterHtml(html);
+
+    expect(cleaned).toContain('Before');
+    expect(cleaned).toContain('After');
+    expect(cleaned).not.toContain('MSO only');
+    expect(cleaned).not.toContain('<!--[if');
+  });
+
+  it('strips DuckDuckGo Email Protection preview divs', () => {
+    const html = '<div data-email-protection="duckduckgo-email-protection-preview" style="display:none;">Preview text here</div><p>Real content</p>';
+    const cleaned = cleanNewsletterHtml(html);
+
+    expect(cleaned).not.toContain('duckduckgo');
+    expect(cleaned).not.toContain('Preview text here');
+    expect(cleaned).toContain('Real content');
+  });
+
+  it('strips DuckDuckGo Email Protection banner tables', () => {
+    const html = '<table class="duckduckgo-email-protection-banner" width="100%"><tr><td>DuckDuckGo removed 1 tracker. <a href="#">More</a></td></tr></table><p>Newsletter body</p>';
+    const cleaned = cleanNewsletterHtml(html);
+
+    expect(cleaned).not.toContain('duckduckgo');
+    expect(cleaned).not.toContain('removed 1 tracker');
+    expect(cleaned).toContain('Newsletter body');
+  });
+
+  it('strips DDG banner with nested tables (real-world structure)', () => {
+    // DDG banner contains layout tables nested 3 levels deep.
+    // The old regex stopped at the first inner </table>.
+    const html = [
+      '<table aria-label="duckduckgo-email-protection-banner" width="100%">',
+      '  <tr><td>',
+      '    <table><tr><td>DuckDuckGo removed 1 tracker</td></tr></table>',
+      '    <table>',
+      '      <tr><td>',
+      '        <table><tr><td>',
+      '          <a href="https://duckduckgo.com/email/report-spam#token">Report Spam</a>',
+      '        </td></tr></table>',
+      '      </td></tr>',
+      '    </table>',
+      '  </td></tr>',
+      '</table>',
+      '<p>Real newsletter starts here</p>',
+    ].join('\n');
+    const cleaned = cleanNewsletterHtml(html);
+
+    expect(cleaned).not.toContain('Report Spam');
+    expect(cleaned).not.toContain('removed 1 tracker');
+    expect(cleaned).not.toContain('duckduckgo');
+    expect(cleaned).toContain('Real newsletter starts here');
+  });
+
+  it('strips stray DDG report-spam links outside banner', () => {
+    const html = '<div><a href="https://duckduckgo.com/email/report-spam#abc123">Report Spam</a></div><p>Content</p>';
+    const cleaned = cleanNewsletterHtml(html);
+
+    expect(cleaned).not.toContain('Report Spam');
+    expect(cleaned).not.toContain('duckduckgo.com');
+    expect(cleaned).toContain('Content');
+  });
+
+  it('strips content after closing </html> tag (mail relay footers)', () => {
+    const html = '<html><body><p>Newsletter</p></body></html>\n\n-- \nYou received this because you are subscribed to Google Groups.\nTo unsubscribe send email to list+unsub@groups.com.';
+    const cleaned = cleanNewsletterHtml(html);
+
+    expect(cleaned).toContain('Newsletter');
+    expect(cleaned).toContain('</html>');
+    expect(cleaned).not.toContain('Google Groups');
+    expect(cleaned).not.toContain('unsubscribe');
+  });
+
+  it('strips hidden preheader/preview text spans', () => {
+    const html = '<span style="display: none; max-height: 0px; overflow: hidden;">&#x34F; &#x34F; preview</span><p>Content</p>';
+    const cleaned = cleanNewsletterHtml(html);
+
+    expect(cleaned).not.toContain('preview');
+    expect(cleaned).toContain('Content');
+  });
+
+  it('strips display:none divs (email preheader)', () => {
+    const html = '<div style="display:none;font-size:1px;color:#ffffff;">Preheader text for inbox</div><p>Body</p>';
+    const cleaned = cleanNewsletterHtml(html);
+
+    expect(cleaned).not.toContain('Preheader text for inbox');
+    expect(cleaned).toContain('Body');
+  });
+
+  it('collapses excessive blank lines after stripping', () => {
+    const html = '<p>Top</p>\n\n\n\n\n\n<p>Bottom</p>';
+    const cleaned = cleanNewsletterHtml(html);
+
+    expect(cleaned).not.toMatch(/\n{3,}/);
+    expect(cleaned).toContain('<p>Top</p>');
+    expect(cleaned).toContain('<p>Bottom</p>');
+  });
+});
+
+// --- Newsletter Base Filename ---
+
+describe('generateNewsletterBaseFilename', () => {
+  it('returns path without extension', () => {
+    const email = createParsedEmail({
+      from: { name: 'Design Weekly', email: 'hello@designweekly.com' },
+      subject: 'Issue #47',
+      date: new Date('2026-02-03T10:00:00Z'),
+      isNewsletter: true,
+      newsletterName: 'Design Weekly',
+    });
+
+    const base = generateNewsletterBaseFilename(email, '0 - INBOX/NEWSLETTERS');
+    expect(base).toBe('0 - INBOX/NEWSLETTERS/2026-02-03 - Design Weekly - Issue #47');
+    expect(base).not.toContain('.md');
+    expect(base).not.toContain('.html');
+  });
+
+  it('matches generateNewsletterFilename minus extension', () => {
+    const email = createParsedEmail({
+      subject: 'Test Subject',
+      date: new Date('2026-02-03T10:00:00Z'),
+      isNewsletter: true,
+      newsletterName: 'Test Newsletter',
+    });
+
+    const base = generateNewsletterBaseFilename(email, 'NL');
+    const full = generateNewsletterFilename(email, 'NL');
+    expect(full).toBe(base + '.md');
+  });
+
+  it('sanitizes unsafe characters', () => {
+    const email = createParsedEmail({
+      subject: 'Test',
+      date: new Date('2026-02-03T10:00:00Z'),
+      isNewsletter: true,
+      newsletterName: 'News/Letter:Special',
+    });
+
+    const base = generateNewsletterBaseFilename(email, 'NL');
+    expect(base).toContain('News-Letter-Special');
   });
 });
 

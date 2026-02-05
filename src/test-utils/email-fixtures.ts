@@ -130,6 +130,7 @@ export function createParsedEmail(overrides: Partial<{
   subject: string;
   date: Date;
   body: string;
+  rawHtml: string;
   source: 'gmail' | 'outlook' | 'icloud' | 'unknown';
   isNewsletter: boolean;
   newsletterName: string;
@@ -139,7 +140,8 @@ export function createParsedEmail(overrides: Partial<{
     from: overrides.from || { name: 'Test Sender', email: 'test@example.com' },
     subject: overrides.subject || 'Test Subject',
     date: overrides.date || new Date('2025-01-15T10:30:00Z'),
-    body: overrides.body || 'Test email body content',
+    body: overrides.body ?? 'Test email body content',
+    rawHtml: overrides.rawHtml ?? '<p>Test email body</p>',
     source: overrides.source || 'unknown' as const,
     attachments: [],
     isNewsletter: overrides.isNewsletter ?? false,

@@ -57,6 +57,7 @@ export interface ParsedEmail {
   subject: string;
   date: Date;
   body: string; // Markdown-converted body
+  rawHtml: string; // Original HTML for newsletter passthrough
   source: EmailSource;
   attachments: Email['attachments'];
   isNewsletter: boolean;
@@ -70,85 +71,6 @@ const turndownService = new TurndownService({
   bulletListMarker: '-',
 });
 
-// Newsletter-specific Turndown instance with rules for complex HTML layouts
-const newsletterTurndownService = new TurndownService({
-  headingStyle: 'atx',
-  codeBlockStyle: 'fenced',
-  bulletListMarker: '-',
-});
-
-// Newsletter HTML uses <table> for layout, not data.
-// Override each table sub-element to strip layout formatting
-// and extract content as plain paragraphs.
-newsletterTurndownService.addRule('tableCell', {
-  filter: ['td', 'th'],
-  replacement: function (content) {
-    return content.trim() ? content.trim() + '\n\n' : '';
-  },
-});
-
-newsletterTurndownService.addRule('tableRow', {
-  filter: 'tr',
-  replacement: function (content) {
-    return content.trim() + '\n';
-  },
-});
-
-newsletterTurndownService.addRule('tableSection', {
-  filter: ['thead', 'tbody', 'tfoot'],
-  replacement: function (content) {
-    return content;
-  },
-});
-
-newsletterTurndownService.addRule('layoutTable', {
-  filter: 'table',
-  replacement: function (content) {
-    return '\n\n' + content.trim() + '\n\n';
-  },
-});
-
-// Strip tracking pixels (1x1 or very small images)
-newsletterTurndownService.addRule('trackingPixel', {
-  filter: function (node) {
-    if (node.nodeName !== 'IMG') return false;
-    const w = node.getAttribute('width');
-    const h = node.getAttribute('height');
-    return (w === '1' || h === '1' || w === '0' || h === '0');
-  },
-  replacement: function () { return ''; },
-});
-
-// Strip common tracking/spacer images by domain patterns
-newsletterTurndownService.addRule('trackerImage', {
-  filter: function (node) {
-    if (node.nodeName !== 'IMG') return false;
-    const src = (node.getAttribute('src') || '').toLowerCase();
-    const trackerPatterns = [
-      'open.substack.com', 'pixel.', 'track.', 'beacon.',
-      'email.mg.', '/o.gif', '/t.gif', '/spacer',
-      'list-manage.com/track',
-    ];
-    return trackerPatterns.some(p => src.includes(p));
-  },
-  replacement: function () { return ''; },
-});
-
-// Convert styled CTA buttons to plain links
-newsletterTurndownService.addRule('ctaButton', {
-  filter: function (node) {
-    if (node.nodeName !== 'A') return false;
-    // Buttons typically have background-color styling or contain block elements
-    const style = node.getAttribute('style') || '';
-    return style.includes('background-color') || style.includes('background:');
-  },
-  replacement: function (content, node) {
-    const href = node.getAttribute('href') || '';
-    const text = content.trim().replace(/\n/g, ' ') || 'Link';
-    if (!href) return text;
-    return `[${text}](${href})`;
-  },
-});
 
 export default {
   async scheduled(event: ScheduledEvent, env: Env, ctx: ExecutionContext): Promise<void> {
@@ -175,13 +97,31 @@ export default {
       const parsed = await parseEmail(message, route);
 
       // Route to the correct pipeline
-      let markdown: string;
-      let filename: string;
+      let markdown = '';
+      let filename = '';
+      let newsletterHtmlPath: string | null = null;
+      let newsletterHtmlContent: string | null = null;
+
+      // Helper: prepare newsletter dual-file output (HTML + markdown sidecar)
+      const prepareNewsletter = () => {
+        const newsletterFolder = env.NEWSLETTER_FOLDER || '0 - INBOX/NEWSLETTERS';
+        const baseName = generateNewsletterBaseFilename(parsed, newsletterFolder);
+        filename = baseName + '.md';
+
+        if (parsed.rawHtml) {
+          newsletterHtmlContent = cleanNewsletterHtml(parsed.rawHtml);
+          newsletterHtmlPath = baseName + '.html';
+          const htmlBasename = newsletterHtmlPath.split('/').pop()!;
+          markdown = generateNewsletterSidecarMarkdown(parsed, htmlBasename);
+        } else {
+          // Text-only newsletter: embed body directly, no HTML companion
+          markdown = generateNewsletterSidecarMarkdown(parsed, null);
+        }
+      };
 
       switch (route) {
         case 'newsletter':
-          markdown = generateNewsletterMarkdown(parsed);
-          filename = generateNewsletterFilename(parsed, env.NEWSLETTER_FOLDER || '0 - INBOX/NEWSLETTERS');
+          prepareNewsletter();
           break;
         case 'agent':
           markdown = generateAgentMessageMarkdown(parsed);
@@ -195,8 +135,7 @@ export default {
         default:
           // Catch-all: fall back to header-based detection
           if (parsed.isNewsletter) {
-            markdown = generateNewsletterMarkdown(parsed);
-            filename = generateNewsletterFilename(parsed, env.NEWSLETTER_FOLDER || '0 - INBOX/NEWSLETTERS');
+            prepareNewsletter();
           } else {
             markdown = generateMarkdown(parsed);
             filename = generateFilename(parsed, env.INBOX_FOLDER || '0 - INBOX');
@@ -211,7 +150,7 @@ export default {
         return;
       }
 
-      // Write to R2 bucket
+      // Write markdown note to R2
       await env.OBSIDIAN_BUCKET.put(filename, markdown, {
         httpMetadata: {
           contentType: 'text/markdown; charset=utf-8',
@@ -221,10 +160,28 @@ export default {
           'email-from': parsed.from.email,
           'email-source': parsed.source,
           'email-route': route,
-          'email-type': parsed.isNewsletter ? 'newsletter' : (route === 'agent' ? 'agent' : 'email'),
+          'email-type': parsed.isNewsletter ? 'newsletter-sidecar' : (route === 'agent' ? 'agent' : 'email'),
           'created': new Date().toISOString(),
         },
       });
+
+      // Write companion HTML for newsletters (after dedup check)
+      if (newsletterHtmlPath && newsletterHtmlContent) {
+        await env.OBSIDIAN_BUCKET.put(newsletterHtmlPath, newsletterHtmlContent, {
+          httpMetadata: {
+            contentType: 'text/html; charset=utf-8',
+          },
+          customMetadata: {
+            'email-id': parsed.messageId,
+            'email-from': parsed.from.email,
+            'email-source': parsed.source,
+            'email-route': route,
+            'email-type': 'newsletter-html',
+            'created': new Date().toISOString(),
+          },
+        });
+        console.log(`[${route}] HTML saved: ${newsletterHtmlPath}`);
+      }
 
       console.log(`[${route}] Note created: ${parsed.messageId} → ${filename}`);
 
@@ -270,22 +227,13 @@ function sanitizeAttachmentFilename(filename: string): string {
 
 /**
  * Parse email using postal-mime library.
- * The route parameter determines which Turndown service to use:
- *   - 'newsletter' route → always newsletter Turndown (layout tables, tracker removal)
- *   - 'inbox' route → detect via List-Unsubscribe header, then pick Turndown
- *   - 'task' / 'agent' → standard Turndown
+ * Newsletters skip Turndown conversion — their raw HTML is passed through
+ * for direct rendering via the Obsidian HTML plugin.
  */
 async function parseEmail(message: ForwardableEmailMessage, route: EmailRoute = 'inbox'): Promise<ParsedEmail> {
-  // Parse with postal-mime - it handles ReadableStream directly
   const email: Email = await PostalMime.parse(message.raw);
-
-  // Extract from address
   const fromAddr = extractFromAddress(email);
-
-  // Get message ID from headers or generate one
   const messageId = email.messageId || generateMessageId();
-
-  // Parse date
   const emailDate = email.date ? new Date(email.date) : new Date();
 
   // Determine newsletter status based on route:
@@ -294,12 +242,9 @@ async function parseEmail(message: ForwardableEmailMessage, route: EmailRoute = 
   //   - other routes → not a newsletter
   const newsletter = route === 'newsletter' || (route === 'inbox' && isNewsletter(email));
 
-  // Convert body to markdown — use newsletter Turndown for newsletter content
-  const body = newsletter
-    ? convertNewsletterBodyToMarkdown(email)
-    : convertBodyToMarkdown(email);
+  // Newsletters use rawHtml directly — skip Turndown conversion
+  const body = newsletter ? (email.text || '') : convertBodyToMarkdown(email);
 
-  // Detect source from headers
   const source = detectEmailSource(email);
 
   return {
@@ -308,6 +253,7 @@ async function parseEmail(message: ForwardableEmailMessage, route: EmailRoute = 
     subject: email.subject || 'No Subject',
     date: emailDate,
     body,
+    rawHtml: email.html || '',
     source,
     attachments: email.attachments,
     isNewsletter: newsletter,
@@ -388,26 +334,50 @@ export function extractNewsletterName(email: Email): string {
 }
 
 /**
- * Convert newsletter HTML body to Markdown using newsletter-specific
- * Turndown rules (layout table extraction, tracker stripping, etc.)
+ * Strip an HTML element and everything inside it — even when it contains
+ * nested elements of the same tag (e.g. `<table>` inside `<table>`).
+ *
+ * Regex can't track nesting depth, so this uses a simple index-based scan
+ * that counts open/close tags until depth returns to zero.
+ *
+ * @param html       Full HTML string
+ * @param openTag    The opening tag to find (matched by regex, e.g.
+ *                   `/<table[^>]*duckduckgo[^>]*>/i`)
+ * @param tagName    The tag name for counting nesting, e.g. `"table"`
+ * @returns          HTML with the matched element fully removed, or
+ *                   the original string if no match is found
  */
-function convertNewsletterBodyToMarkdown(email: Email): string {
-  if (email.html) {
-    try {
-      let html = email.html;
-      // Strip unsubscribe footer sections before conversion
-      html = stripUnsubscribeFooter(html);
-      return newsletterTurndownService.turndown(html);
-    } catch (error) {
-      console.warn('Failed to convert newsletter HTML to Markdown, using text fallback:', error);
+function stripNestedElement(html: string, openTag: RegExp, tagName: string): string {
+  const match = html.match(openTag);
+  if (!match || match.index === undefined) return html;
+
+  const startIdx = match.index;
+  const openStr = `<${tagName}`;
+  const closeStr = `</${tagName}>`;
+  let depth = 1;
+  let pos = startIdx + match[0].length;
+  const lowerHtml = html.toLowerCase();
+
+  while (depth > 0 && pos < html.length) {
+    const nextOpen = lowerHtml.indexOf(openStr.toLowerCase(), pos);
+    const nextClose = lowerHtml.indexOf(closeStr.toLowerCase(), pos);
+
+    if (nextClose === -1) break; // malformed HTML, bail out
+
+    if (nextOpen !== -1 && nextOpen < nextClose) {
+      depth++;
+      pos = nextOpen + openStr.length;
+    } else {
+      depth--;
+      if (depth === 0) {
+        const endIdx = nextClose + closeStr.length;
+        return html.substring(0, startIdx) + html.substring(endIdx);
+      }
+      pos = nextClose + closeStr.length;
     }
   }
 
-  if (email.text) {
-    return email.text;
-  }
-
-  return '*No newsletter content*';
+  return html; // couldn't find matching close — return unchanged
 }
 
 /**
@@ -431,12 +401,97 @@ function stripUnsubscribeFooter(html: string): string {
 }
 
 /**
- * Generate newsletter-specific markdown (no tasks section, newsletter metadata)
+ * Clean newsletter HTML for direct rendering in Obsidian.
+ * Strips email-client artifacts, privacy proxy banners, trackers,
+ * and preheader text while preserving actual content, CSS, images,
+ * and layout.
  */
-export function generateNewsletterMarkdown(email: ParsedEmail): string {
+export function cleanNewsletterHtml(html: string): string {
+  if (!html) return '';
+
+  let cleaned = html;
+
+  // ── Scripts ────────────────────────────────────────────────────────
+  cleaned = cleaned.replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '');
+
+  // ── MSO / IE conditional comments ─────────────────────────────────
+  // These are table-layout fallbacks for Outlook/IE that non-email
+  // renderers can misinterpret. Strip the MSO-only blocks entirely.
+  // Pattern: <!--[if mso | IE]>...<![endif]-->  (treated as comment by browsers)
+  cleaned = cleaned.replace(/<!--\[if[^\]]*\]>[\s\S]*?<!\[endif\]-->/gi, '');
+
+  // ── DuckDuckGo Email Protection artifacts ─────────────────────────
+  // DDG's privacy proxy injects a banner, preview div, report-spam
+  // button, and tracker-count notice at the top of forwarded emails.
+  // The banner <table> contains nested tables, so regex can't match
+  // the correct closing tag. Use nesting-aware stripping instead.
+  cleaned = cleaned.replace(/<div[^>]*data-email-protection="duckduckgo-email-protection-preview"[^>]*>[\s\S]*?<\/div>/gi, '');
+  cleaned = stripNestedElement(
+    cleaned,
+    /<table[^>]*(?:class|aria-label)="[^"]*duckduckgo-email-protection[^"]*"[^>]*>/i,
+    'table'
+  );
+  // Safety net: strip stray DDG report-spam / settings links that
+  // may appear outside the banner (e.g. in a footer wrapper).
+  cleaned = cleaned.replace(/<a[^>]*href="[^"]*duckduckgo\.com\/email\/[^"]*"[^>]*>[\s\S]*?<\/a>/gi, '');
+
+  // ── Email preheader / preview text ────────────────────────────────
+  // Hidden spans/divs stuffed with zero-width characters that email
+  // clients show in the inbox list but should be invisible in the body.
+  // The Obsidian HTML plugin may not fully respect display:none CSS.
+  cleaned = cleaned.replace(/<span[^>]*style="[^"]*display:\s*none[^"]*"[^>]*>[\s\S]*?<\/span>/gi, '');
+  cleaned = cleaned.replace(/<div[^>]*style="[^"]*display:\s*none[^"]*"[^>]*>[\s\S]*?<\/div>/gi, '');
+  cleaned = cleaned.replace(/<span[^>]*style="[^"]*max-height:\s*0[^"]*"[^>]*>[\s\S]*?<\/span>/gi, '');
+
+  // ── Tracking pixels ───────────────────────────────────────────────
+  // Images with width/height of 0 or 1 (single-pixel trackers)
+  cleaned = cleaned.replace(/<img\b[^>]*(?:width\s*=\s*["']?[01]["']?|height\s*=\s*["']?[01]["']?)[^>]*\/?>/gi, '');
+
+  // ── Tracker images by domain pattern ──────────────────────────────
+  const trackerPatterns = [
+    'open\\.substack\\.com', 'pixel\\.', 'track\\.', 'beacon\\.',
+    'email\\.mg\\.', '/o\\.gif', '/t\\.gif', '/spacer',
+    'list-manage\\.com/track',
+  ];
+  const trackerRegex = new RegExp(
+    `<img\\b[^>]*src\\s*=\\s*["'][^"']*(?:${trackerPatterns.join('|')})[^"']*["'][^>]*/?>`,
+    'gi'
+  );
+  cleaned = cleaned.replace(trackerRegex, '');
+
+  // ── Unsubscribe footers ───────────────────────────────────────────
+  cleaned = stripUnsubscribeFooter(cleaned);
+
+  // ── Post-</html> content ──────────────────────────────────────────
+  // Mail relays (Google Groups, mailing lists) sometimes append plain
+  // text after the closing </html> tag. Strip everything past it.
+  const htmlCloseIdx = cleaned.toLowerCase().lastIndexOf('</html>');
+  if (htmlCloseIdx !== -1) {
+    cleaned = cleaned.substring(0, htmlCloseIdx + '</html>'.length);
+  }
+
+  // ── Collapse leftover whitespace runs ─────────────────────────────
+  // After stripping large blocks, we can end up with runs of blank
+  // lines that push content down. Collapse to at most two newlines.
+  cleaned = cleaned.replace(/\n{3,}/g, '\n\n');
+
+  return cleaned;
+}
+
+/**
+ * Generate thin markdown sidecar for a newsletter.
+ * Contains YAML frontmatter for Obsidian metadata/search and an embed
+ * wikilink to the companion .html file for full-fidelity rendering.
+ * Falls back to plain text body when no HTML is available.
+ */
+export function generateNewsletterSidecarMarkdown(email: ParsedEmail, htmlFilename: string | null): string {
   const createdDate = formatDate(email.date);
   const fullDate = formatDateLong(email.date);
   const newsletterName = email.newsletterName || email.from.name;
+
+  const content = htmlFilename
+    ? `![[${htmlFilename}]]`
+    : (email.body || '*No newsletter content*');
 
   return `---
 tags:
@@ -457,19 +512,18 @@ status: unprocessed
 
 ---
 
-${email.body}
+${content}
 `;
 }
 
 /**
- * Generate filename for newsletter notes.
- * Uses newsletter name prefix for better sorting in Obsidian.
+ * Generate the base filename (without extension) for newsletter files.
+ * Both the .html and .md sidecar share this base.
  */
-export function generateNewsletterFilename(email: ParsedEmail, newsletterFolder: string): string {
+export function generateNewsletterBaseFilename(email: ParsedEmail, newsletterFolder: string): string {
   const date = formatDate(email.date);
   const newsletterName = email.newsletterName || email.from.name;
 
-  // Clean newsletter name and subject for filename
   const safeName = newsletterName
     .replace(/[/\\?%*:|"<>]/g, '-')
     .replace(/\s+/g, ' ')
@@ -483,7 +537,14 @@ export function generateNewsletterFilename(email: ParsedEmail, newsletterFolder:
     .trim()
     .slice(0, 80);
 
-  return `${newsletterFolder}/${date} - ${safeName} - ${safeSubject}.md`;
+  return `${newsletterFolder}/${date} - ${safeName} - ${safeSubject}`;
+}
+
+/**
+ * Generate .md filename for newsletter sidecar notes.
+ */
+export function generateNewsletterFilename(email: ParsedEmail, newsletterFolder: string): string {
+  return generateNewsletterBaseFilename(email, newsletterFolder) + '.md';
 }
 
 /**
