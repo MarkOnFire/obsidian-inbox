@@ -494,6 +494,23 @@ export function generateAgentMessageMarkdown(email: ParsedEmail): string {
   const createdDate = formatDate(email.date);
   const fullDate = formatDateLong(email.date);
 
+  let attachmentsSection = '';
+  if (email.attachments && email.attachments.length > 0) {
+    const attachmentLinks = email.attachments
+      .map(att => {
+        const safeFilename = sanitizeAttachmentFilename(att.filename || 'untitled');
+        const attachmentPath = `_attachments/${email.messageId}/${safeFilename}`;
+        return `- ![[${attachmentPath}]]`;
+      })
+      .join('\n');
+    attachmentsSection = `---
+## Attachments
+
+${attachmentLinks}
+
+`;
+  }
+
   return `---
 tags:
   - agent-message
@@ -513,7 +530,8 @@ status: pending
 ---
 
 ${email.body}
-`;
+
+${attachmentsSection}`;
 }
 
 /**
