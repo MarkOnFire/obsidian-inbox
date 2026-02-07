@@ -56,11 +56,12 @@ export interface ParsedEmail {
   };
   subject: string;
   date: Date;
-  body: string; // Markdown-converted body
+  body: string; // Markdown-converted body (or excerpt for newsletters)
   source: EmailSource;
   attachments: Email['attachments'];
   isNewsletter: boolean;
   newsletterName: string;
+  viewInBrowserUrl: string | null;
 }
 
 // Initialize Turndown for HTML to Markdown conversion (regular emails)
@@ -70,85 +71,6 @@ const turndownService = new TurndownService({
   bulletListMarker: '-',
 });
 
-// Newsletter-specific Turndown instance with rules for complex HTML layouts
-const newsletterTurndownService = new TurndownService({
-  headingStyle: 'atx',
-  codeBlockStyle: 'fenced',
-  bulletListMarker: '-',
-});
-
-// Newsletter HTML uses <table> for layout, not data.
-// Override each table sub-element to strip layout formatting
-// and extract content as plain paragraphs.
-newsletterTurndownService.addRule('tableCell', {
-  filter: ['td', 'th'],
-  replacement: function (content) {
-    return content.trim() ? content.trim() + '\n\n' : '';
-  },
-});
-
-newsletterTurndownService.addRule('tableRow', {
-  filter: 'tr',
-  replacement: function (content) {
-    return content.trim() + '\n';
-  },
-});
-
-newsletterTurndownService.addRule('tableSection', {
-  filter: ['thead', 'tbody', 'tfoot'],
-  replacement: function (content) {
-    return content;
-  },
-});
-
-newsletterTurndownService.addRule('layoutTable', {
-  filter: 'table',
-  replacement: function (content) {
-    return '\n\n' + content.trim() + '\n\n';
-  },
-});
-
-// Strip tracking pixels (1x1 or very small images)
-newsletterTurndownService.addRule('trackingPixel', {
-  filter: function (node) {
-    if (node.nodeName !== 'IMG') return false;
-    const w = node.getAttribute('width');
-    const h = node.getAttribute('height');
-    return (w === '1' || h === '1' || w === '0' || h === '0');
-  },
-  replacement: function () { return ''; },
-});
-
-// Strip common tracking/spacer images by domain patterns
-newsletterTurndownService.addRule('trackerImage', {
-  filter: function (node) {
-    if (node.nodeName !== 'IMG') return false;
-    const src = (node.getAttribute('src') || '').toLowerCase();
-    const trackerPatterns = [
-      'open.substack.com', 'pixel.', 'track.', 'beacon.',
-      'email.mg.', '/o.gif', '/t.gif', '/spacer',
-      'list-manage.com/track',
-    ];
-    return trackerPatterns.some(p => src.includes(p));
-  },
-  replacement: function () { return ''; },
-});
-
-// Convert styled CTA buttons to plain links
-newsletterTurndownService.addRule('ctaButton', {
-  filter: function (node) {
-    if (node.nodeName !== 'A') return false;
-    // Buttons typically have background-color styling or contain block elements
-    const style = node.getAttribute('style') || '';
-    return style.includes('background-color') || style.includes('background:');
-  },
-  replacement: function (content, node) {
-    const href = node.getAttribute('href') || '';
-    const text = content.trim().replace(/\n/g, ' ') || 'Link';
-    if (!href) return text;
-    return `[${text}](${href})`;
-  },
-});
 
 export default {
   async scheduled(event: ScheduledEvent, env: Env, ctx: ExecutionContext): Promise<void> {
@@ -294,10 +216,18 @@ async function parseEmail(message: ForwardableEmailMessage, route: EmailRoute = 
   //   - other routes → not a newsletter
   const newsletter = route === 'newsletter' || (route === 'inbox' && isNewsletter(email));
 
-  // Convert body to markdown — use newsletter Turndown for newsletter content
-  const body = newsletter
-    ? convertNewsletterBodyToMarkdown(email)
-    : convertBodyToMarkdown(email);
+  // For newsletters: extract "view in browser" link and use a short excerpt
+  // instead of the full (lossy) HTML-to-Markdown conversion.
+  // For other emails: full Turndown conversion as before.
+  let body: string;
+  let viewInBrowserUrl: string | null = null;
+
+  if (newsletter) {
+    viewInBrowserUrl = email.html ? extractViewInBrowserUrl(email.html) : null;
+    body = extractNewsletterExcerpt(email.text || '');
+  } else {
+    body = convertBodyToMarkdown(email);
+  }
 
   // Detect source from headers
   const source = detectEmailSource(email);
@@ -312,6 +242,7 @@ async function parseEmail(message: ForwardableEmailMessage, route: EmailRoute = 
     attachments: email.attachments,
     isNewsletter: newsletter,
     newsletterName: newsletter ? extractNewsletterName(email) : '',
+    viewInBrowserUrl,
   };
 }
 
@@ -388,55 +319,70 @@ export function extractNewsletterName(email: Email): string {
 }
 
 /**
- * Convert newsletter HTML body to Markdown using newsletter-specific
- * Turndown rules (layout table extraction, tracker stripping, etc.)
+ * Extract "view in browser" URL from newsletter HTML.
+ * Looks for common link text patterns like "View in browser",
+ * "View online", "Read online", "Open in browser", etc.
  */
-function convertNewsletterBodyToMarkdown(email: Email): string {
-  if (email.html) {
-    try {
-      let html = email.html;
-      // Strip unsubscribe footer sections before conversion
-      html = stripUnsubscribeFooter(html);
-      return newsletterTurndownService.turndown(html);
-    } catch (error) {
-      console.warn('Failed to convert newsletter HTML to Markdown, using text fallback:', error);
+export function extractViewInBrowserUrl(html: string): string | null {
+  const linkPattern = /<a\s[^>]*href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi;
+  const textPatterns = /view\s+(this\s+)?(email\s+)?(in\s+)?(your\s+)?(web\s+)?browser|view\s+online|read\s+online|open\s+in\s+browser|view\s+as\s+a?\s*web\s*page/i;
+
+  let match;
+  while ((match = linkPattern.exec(html)) !== null) {
+    const href = match[1];
+    const text = match[2].replace(/<[^>]*>/g, '').trim();
+    if (textPatterns.test(text)) {
+      return href;
     }
   }
-
-  if (email.text) {
-    return email.text;
-  }
-
-  return '*No newsletter content*';
+  return null;
 }
 
 /**
- * Strip common unsubscribe footer patterns from HTML.
- * Removes the footer section while preserving the main content.
+ * Extract a short excerpt from the plain-text email body.
+ * Strips footer/unsubscribe boilerplate and truncates at a sentence boundary.
  */
-function stripUnsubscribeFooter(html: string): string {
-  // Remove common footer patterns — these are heuristic and will improve over time
-  const footerPatterns = [
-    // Mailchimp/ConvertKit style footers
-    /<div[^>]*class="?footer"?[^>]*>[\s\S]*$/i,
-    // Common unsubscribe text blocks at the end
-    /<p[^>]*>\s*(?:You(?:'re| are) receiving this|Unsubscribe|Update your preferences|View in browser)[\s\S]*$/i,
-  ];
+export function extractNewsletterExcerpt(text: string, maxLength: number = 500): string {
+  if (!text) return '';
 
-  let cleaned = html;
-  for (const pattern of footerPatterns) {
-    cleaned = cleaned.replace(pattern, '');
+  // Strip common footer/unsubscribe boilerplate
+  let cleaned = text
+    .replace(/You(?:'re| are) receiving this[\s\S]*/i, '')
+    .replace(/Unsubscribe[\s\S]*/i, '')
+    .replace(/Update your preferences[\s\S]*/i, '')
+    .replace(/View in browser[\s\S]*/i, '');
+
+  // Normalize whitespace
+  cleaned = cleaned.replace(/\n{3,}/g, '\n\n').trim();
+
+  if (cleaned.length <= maxLength) return cleaned;
+
+  // Truncate at a sentence boundary
+  const truncated = cleaned.slice(0, maxLength);
+  const lastSentence = truncated.lastIndexOf('. ');
+  if (lastSentence > maxLength * 0.5) {
+    return truncated.slice(0, lastSentence + 1);
   }
-  return cleaned;
+  return truncated + '...';
 }
 
+
 /**
- * Generate newsletter-specific markdown (no tasks section, newsletter metadata)
+ * Generate newsletter-specific markdown — summary + link approach.
+ * Instead of converting the full HTML body (which renders poorly in Obsidian),
+ * show a short excerpt with a prominent "view in browser" link.
  */
 export function generateNewsletterMarkdown(email: ParsedEmail): string {
   const createdDate = formatDate(email.date);
-  const fullDate = formatDateLong(email.date);
   const newsletterName = email.newsletterName || email.from.name;
+
+  const linkSection = email.viewInBrowserUrl
+    ? `[Read full newsletter →](${email.viewInBrowserUrl})`
+    : '*No "view in browser" link found — check your email client for the original.*';
+
+  const excerptSection = email.body
+    ? `---\n\n${email.body}`
+    : '';
 
   return `---
 tags:
@@ -447,17 +393,14 @@ newsletter_name: ${escapeYaml(newsletterName)}
 subject: ${escapeYaml(email.subject)}
 email_id: ${email.messageId}
 source: ${email.source}
-status: unprocessed
+status: unread
 ---
 
 ## ${newsletterName} — ${email.subject}
 
-**From:** ${email.from.name} <${email.from.email}>
-**Date:** ${fullDate}
+${linkSection}
 
----
-
-${email.body}
+${excerptSection}
 `;
 }
 

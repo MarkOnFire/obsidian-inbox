@@ -133,7 +133,7 @@ export function createParsedEmail(overrides: Partial<{
   source: 'gmail' | 'outlook' | 'icloud' | 'unknown';
   isNewsletter: boolean;
   newsletterName: string;
-  attachments: Email['attachments'];
+  viewInBrowserUrl: string | null;
 }> = {}) {
   return {
     messageId: overrides.messageId || 'test-message-id',
@@ -145,5 +145,6 @@ export function createParsedEmail(overrides: Partial<{
     attachments: overrides.attachments ?? [],
     isNewsletter: overrides.isNewsletter ?? false,
     newsletterName: overrides.newsletterName ?? '',
+    viewInBrowserUrl: overrides.viewInBrowserUrl ?? null,
   };
 }
