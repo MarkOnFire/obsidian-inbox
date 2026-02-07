@@ -14,6 +14,8 @@ import {
   detectEmailSource,
   isNewsletter,
   extractNewsletterName,
+  extractViewInBrowserUrl,
+  extractNewsletterExcerpt,
   generateNewsletterMarkdown,
   generateNewsletterFilename,
   extractRoute,
@@ -341,6 +343,89 @@ describe('extractNewsletterName', () => {
   });
 });
 
+describe('extractViewInBrowserUrl', () => {
+  it('extracts URL from "View in browser" link', () => {
+    const html = '<p><a href="https://example.com/view/123">View in browser</a></p><p>Content</p>';
+    expect(extractViewInBrowserUrl(html)).toBe('https://example.com/view/123');
+  });
+
+  it('extracts URL from "View this email in your browser" link', () => {
+    const html = '<a href="https://example.com/view/456">View this email in your browser</a>';
+    expect(extractViewInBrowserUrl(html)).toBe('https://example.com/view/456');
+  });
+
+  it('extracts URL from "View online" link', () => {
+    const html = '<a href="https://example.com/online">View online</a>';
+    expect(extractViewInBrowserUrl(html)).toBe('https://example.com/online');
+  });
+
+  it('extracts URL from "Read online" link', () => {
+    const html = '<a href="https://example.com/read">Read online</a>';
+    expect(extractViewInBrowserUrl(html)).toBe('https://example.com/read');
+  });
+
+  it('extracts URL from "Open in browser" link', () => {
+    const html = '<a href="https://example.com/open">Open in browser</a>';
+    expect(extractViewInBrowserUrl(html)).toBe('https://example.com/open');
+  });
+
+  it('is case-insensitive', () => {
+    const html = '<a href="https://example.com/view">VIEW IN BROWSER</a>';
+    expect(extractViewInBrowserUrl(html)).toBe('https://example.com/view');
+  });
+
+  it('handles nested HTML inside the link', () => {
+    const html = '<a href="https://example.com/view"><span style="color:blue">View in browser</span></a>';
+    expect(extractViewInBrowserUrl(html)).toBe('https://example.com/view');
+  });
+
+  it('returns null when no matching link exists', () => {
+    const html = '<a href="https://example.com">Click here</a>';
+    expect(extractViewInBrowserUrl(html)).toBeNull();
+  });
+
+  it('returns null for empty HTML', () => {
+    expect(extractViewInBrowserUrl('')).toBeNull();
+  });
+});
+
+describe('extractNewsletterExcerpt', () => {
+  it('returns full text when under maxLength', () => {
+    expect(extractNewsletterExcerpt('Short text.')).toBe('Short text.');
+  });
+
+  it('truncates long text at sentence boundary', () => {
+    const text = 'First sentence. Second sentence. ' + 'A'.repeat(500);
+    const excerpt = extractNewsletterExcerpt(text, 50);
+    expect(excerpt).toBe('First sentence. Second sentence.');
+  });
+
+  it('adds ellipsis when no sentence boundary found', () => {
+    const text = 'A'.repeat(600);
+    const excerpt = extractNewsletterExcerpt(text, 500);
+    expect(excerpt).toBe('A'.repeat(500) + '...');
+  });
+
+  it('strips unsubscribe footer boilerplate', () => {
+    const text = 'Real content here.\n\nUnsubscribe from this list.';
+    expect(extractNewsletterExcerpt(text)).toBe('Real content here.');
+  });
+
+  it('strips "you are receiving this" footer', () => {
+    const text = "Content.\n\nYou're receiving this because you signed up.";
+    expect(extractNewsletterExcerpt(text)).toBe('Content.');
+  });
+
+  it('returns empty string for empty input', () => {
+    expect(extractNewsletterExcerpt('')).toBe('');
+  });
+
+  it('normalizes excessive newlines', () => {
+    const text = 'Paragraph one.\n\n\n\n\nParagraph two.';
+    expect(extractNewsletterExcerpt(text)).toBe('Paragraph one.\n\nParagraph two.');
+  });
+});
+
 describe('generateNewsletterMarkdown', () => {
   it('generates newsletter markdown with correct frontmatter', () => {
     const email = createParsedEmail({
@@ -348,10 +433,11 @@ describe('generateNewsletterMarkdown', () => {
       from: { name: 'Design Weekly', email: 'hello@designweekly.com' },
       subject: 'Issue #47: CSS Updates',
       date: new Date('2026-02-03T10:00:00Z'),
-      body: 'Newsletter content here',
+      body: 'Newsletter excerpt here',
       source: 'unknown',
       isNewsletter: true,
       newsletterName: 'Design Weekly',
+      viewInBrowserUrl: 'https://designweekly.com/view/47',
     });
 
     const markdown = generateNewsletterMarkdown(email);
@@ -360,9 +446,33 @@ describe('generateNewsletterMarkdown', () => {
     expect(markdown).toContain('- newsletter');
     expect(markdown).not.toContain('- email-task');
     expect(markdown).toContain('newsletter_name: Design Weekly');
-    expect(markdown).toContain('status: unprocessed');
+    expect(markdown).toContain('status: unread');
     expect(markdown).toContain('from: hello@designweekly.com');
     expect(markdown).toContain('email_id: nl-123');
+  });
+
+  it('includes "view in browser" link when available', () => {
+    const email = createParsedEmail({
+      isNewsletter: true,
+      newsletterName: 'Test Newsletter',
+      viewInBrowserUrl: 'https://example.com/view/123',
+    });
+
+    const markdown = generateNewsletterMarkdown(email);
+
+    expect(markdown).toContain('[Read full newsletter →](https://example.com/view/123)');
+  });
+
+  it('shows fallback message when no view-in-browser URL', () => {
+    const email = createParsedEmail({
+      isNewsletter: true,
+      newsletterName: 'Test Newsletter',
+      viewInBrowserUrl: null,
+    });
+
+    const markdown = generateNewsletterMarkdown(email);
+
+    expect(markdown).toContain('No "view in browser" link found');
   });
 
   it('does NOT include tasks section', () => {
@@ -398,6 +508,18 @@ describe('generateNewsletterMarkdown', () => {
 
     const markdown = generateNewsletterMarkdown(email);
     expect(markdown).toContain('newsletter_name: "News: Daily Update"');
+  });
+
+  it('includes body excerpt after separator', () => {
+    const email = createParsedEmail({
+      isNewsletter: true,
+      newsletterName: 'Test',
+      body: 'This is the newsletter excerpt content.',
+      viewInBrowserUrl: 'https://example.com/view',
+    });
+
+    const markdown = generateNewsletterMarkdown(email);
+    expect(markdown).toContain('This is the newsletter excerpt content.');
   });
 });
 
