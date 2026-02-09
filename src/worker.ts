@@ -216,15 +216,16 @@ async function parseEmail(message: ForwardableEmailMessage, route: EmailRoute = 
   //   - other routes → not a newsletter
   const newsletter = route === 'newsletter' || (route === 'inbox' && isNewsletter(email));
 
-  // For newsletters: extract "view in browser" link and use a short excerpt
-  // instead of the full (lossy) HTML-to-Markdown conversion.
+  // For newsletters: convert HTML to Markdown via Turndown then extract a
+  // generous excerpt (2000 chars) and strip boilerplate footers.
   // For other emails: full Turndown conversion as before.
   let body: string;
   let viewInBrowserUrl: string | null = null;
 
   if (newsletter) {
     viewInBrowserUrl = email.html ? extractViewInBrowserUrl(email.html) : null;
-    body = extractNewsletterExcerpt(email.text || '');
+    const fullBody = convertBodyToMarkdown(email);
+    body = extractNewsletterExcerpt(fullBody);
   } else {
     body = convertBodyToMarkdown(email);
   }
@@ -339,18 +340,17 @@ export function extractViewInBrowserUrl(html: string): string | null {
 }
 
 /**
- * Extract a short excerpt from the plain-text email body.
+ * Extract a comprehensive excerpt from the newsletter body.
  * Strips footer/unsubscribe boilerplate and truncates at a sentence boundary.
  */
-export function extractNewsletterExcerpt(text: string, maxLength: number = 500): string {
+export function extractNewsletterExcerpt(text: string, maxLength: number = 2000): string {
   if (!text) return '';
 
   // Strip common footer/unsubscribe boilerplate
   let cleaned = text
     .replace(/You(?:'re| are) receiving this[\s\S]*/i, '')
     .replace(/Unsubscribe[\s\S]*/i, '')
-    .replace(/Update your preferences[\s\S]*/i, '')
-    .replace(/View in browser[\s\S]*/i, '');
+    .replace(/Update your preferences[\s\S]*/i, '');
 
   // Normalize whitespace
   cleaned = cleaned.replace(/\n{3,}/g, '\n\n').trim();
