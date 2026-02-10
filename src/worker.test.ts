@@ -424,6 +424,22 @@ describe('extractNewsletterExcerpt', () => {
     const text = 'Paragraph one.\n\n\n\n\nParagraph two.';
     expect(extractNewsletterExcerpt(text)).toBe('Paragraph one.\n\nParagraph two.');
   });
+
+  it('uses 2000 char default limit for comprehensive excerpts', () => {
+    // A 1500-char text should be kept in full with the new default
+    const text = 'A'.repeat(1500);
+    expect(extractNewsletterExcerpt(text)).toBe(text);
+  });
+
+  it('truncates text over 2000 chars by default', () => {
+    const text = 'A'.repeat(2500);
+    expect(extractNewsletterExcerpt(text)).toBe('A'.repeat(2000) + '...');
+  });
+
+  it('preserves "View in browser" text (not stripped as boilerplate)', () => {
+    const text = 'View in browser\n\nHere is the newsletter content.';
+    expect(extractNewsletterExcerpt(text)).toBe(text);
+  });
 });
 
 describe('generateNewsletterMarkdown', () => {
@@ -670,6 +686,47 @@ describe('generateAgentMessageMarkdown', () => {
 
     const markdown = generateAgentMessageMarkdown(email);
     expect(markdown).toContain('subject: "Task: Do this thing"');
+  });
+
+  it('includes attachment wikilinks when attachments are present', () => {
+    const email = createParsedEmail({
+      messageId: 'agent-att-123',
+      attachments: [
+        {
+          filename: 'report.pdf',
+          mimeType: 'application/pdf',
+          content: new ArrayBuffer(0),
+          disposition: 'attachment' as const,
+          related: false,
+          contentId: '',
+        },
+        {
+          filename: 'screenshot.png',
+          mimeType: 'image/png',
+          content: new ArrayBuffer(0),
+          disposition: 'attachment' as const,
+          related: false,
+          contentId: '',
+        },
+      ],
+    });
+
+    const markdown = generateAgentMessageMarkdown(email);
+
+    expect(markdown).toContain('## Attachments');
+    expect(markdown).toContain('![[_attachments/agent-att-123/report.pdf]]');
+    expect(markdown).toContain('![[_attachments/agent-att-123/screenshot.png]]');
+  });
+
+  it('omits attachments section when no attachments', () => {
+    const email = createParsedEmail({
+      messageId: 'agent-no-att',
+    });
+
+    const markdown = generateAgentMessageMarkdown(email);
+
+    expect(markdown).not.toContain('## Attachments');
+    expect(markdown).not.toContain('![[');
   });
 });
 

@@ -10,7 +10,9 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "test:coverage": "vitest run --coverage"
+    "test:coverage": "vitest run --coverage",
+    "triage": "node scripts/agent-inbox-triage.mjs",
+    "triage:dry-run": "node scripts/agent-inbox-triage.mjs --dry-run"
   },
   "keywords": [
     "cloudflare",

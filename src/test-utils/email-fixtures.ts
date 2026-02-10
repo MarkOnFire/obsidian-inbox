@@ -3,6 +3,7 @@
  */
 
 import type { Email, Header } from 'postal-mime';
+import type { ParsedEmail } from '../worker';
 
 interface EmailFixtureOptions {
   from?: { name?: string; address: string };
@@ -124,17 +125,7 @@ export function createAgentMessageEmail(options: EmailFixtureOptions = {}): Emai
 /**
  * Create a ParsedEmail object for testing generateMarkdown/generateFilename
  */
-export function createParsedEmail(overrides: Partial<{
-  messageId: string;
-  from: { name: string; email: string };
-  subject: string;
-  date: Date;
-  body: string;
-  source: 'gmail' | 'outlook' | 'icloud' | 'unknown';
-  isNewsletter: boolean;
-  newsletterName: string;
-  viewInBrowserUrl: string | null;
-}> = {}) {
+export function createParsedEmail(overrides: Partial<ParsedEmail> = {}) {
   return {
     messageId: overrides.messageId || 'test-message-id',
     from: overrides.from || { name: 'Test Sender', email: 'test@example.com' },
@@ -142,7 +133,7 @@ export function createParsedEmail(overrides: Partial<{
     date: overrides.date || new Date('2025-01-15T10:30:00Z'),
     body: overrides.body || 'Test email body content',
     source: overrides.source || 'unknown' as const,
-    attachments: [],
+    attachments: overrides.attachments ?? [],
     isNewsletter: overrides.isNewsletter ?? false,
     newsletterName: overrides.newsletterName ?? '',
     viewInBrowserUrl: overrides.viewInBrowserUrl ?? null,
