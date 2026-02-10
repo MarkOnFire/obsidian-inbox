@@ -133,7 +133,7 @@ export function createParsedEmail(overrides: Partial<ParsedEmail> = {}) {
     date: overrides.date || new Date('2025-01-15T10:30:00Z'),
     body: overrides.body || 'Test email body content',
     source: overrides.source || 'unknown' as const,
-    attachments: [],
+    attachments: overrides.attachments ?? [],
     isNewsletter: overrides.isNewsletter ?? false,
     newsletterName: overrides.newsletterName ?? '',
     viewInBrowserUrl: overrides.viewInBrowserUrl ?? null,

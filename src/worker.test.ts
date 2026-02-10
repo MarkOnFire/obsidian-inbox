@@ -671,6 +671,47 @@ describe('generateAgentMessageMarkdown', () => {
     const markdown = generateAgentMessageMarkdown(email);
     expect(markdown).toContain('subject: "Task: Do this thing"');
   });
+
+  it('includes attachment wikilinks when attachments are present', () => {
+    const email = createParsedEmail({
+      messageId: 'agent-att-123',
+      attachments: [
+        {
+          filename: 'report.pdf',
+          mimeType: 'application/pdf',
+          content: new ArrayBuffer(0),
+          disposition: 'attachment' as const,
+          related: false,
+          contentId: '',
+        },
+        {
+          filename: 'screenshot.png',
+          mimeType: 'image/png',
+          content: new ArrayBuffer(0),
+          disposition: 'attachment' as const,
+          related: false,
+          contentId: '',
+        },
+      ],
+    });
+
+    const markdown = generateAgentMessageMarkdown(email);
+
+    expect(markdown).toContain('## Attachments');
+    expect(markdown).toContain('![[_attachments/agent-att-123/report.pdf]]');
+    expect(markdown).toContain('![[_attachments/agent-att-123/screenshot.png]]');
+  });
+
+  it('omits attachments section when no attachments', () => {
+    const email = createParsedEmail({
+      messageId: 'agent-no-att',
+    });
+
+    const markdown = generateAgentMessageMarkdown(email);
+
+    expect(markdown).not.toContain('## Attachments');
+    expect(markdown).not.toContain('![[');
+  });
 });
 
 describe('generateAgentMessageFilename', () => {
