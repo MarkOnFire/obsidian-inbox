@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Agent Inbox Triage — launchd service
+
+  Runs the agent-inbox-triage.mjs script every 30 minutes to process
+  pending agent messages with Tier 1 light analysis.
+
+  Install:
+    cp scripts/com.obsidian-inbox.agent-triage.plist ~/Library/LaunchAgents/
+    launchctl load ~/Library/LaunchAgents/com.obsidian-inbox.agent-triage.plist
+
+  Uninstall:
+    launchctl unload ~/Library/LaunchAgents/com.obsidian-inbox.agent-triage.plist
+    rm ~/Library/LaunchAgents/com.obsidian-inbox.agent-triage.plist
+
+  Manual trigger:
+    launchctl start com.obsidian-inbox.agent-triage
+
+  Check logs:
+    tail -f ~/Library/Logs/obsidian-inbox-triage.log
+-->
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>com.obsidian-inbox.agent-triage</string>
+
+	<key>ProgramArguments</key>
+	<array>
+		<string>/Users/mriechers/.nvm/versions/node/v20.20.0/bin/node</string>
+		<string>/Users/mriechers/Developer/obsidian-inbox/scripts/agent-inbox-triage.mjs</string>
+	</array>
+
+	<key>WorkingDirectory</key>
+	<string>/Users/mriechers/Developer/obsidian-inbox</string>
+
+	<key>StartInterval</key>
+	<integer>1800</integer>
+
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>PATH</key>
+		<string>/Users/mriechers/.nvm/versions/node/v20.20.0/bin:/usr/local/bin:/usr/bin:/bin</string>
+		<key>LIBRARY_PATH</key>
+		<string>/Users/mriechers/Developer/the-lodge/knowledge</string>
+	</dict>
+
+	<key>StandardOutPath</key>
+	<string>/Users/mriechers/Library/Logs/obsidian-inbox-triage.log</string>
+	<key>StandardErrorPath</key>
+	<string>/Users/mriechers/Library/Logs/obsidian-inbox-triage.log</string>
+
+	<key>RunAtLoad</key>
+	<false/>
+</dict>
+</plist>

@@ -60,13 +60,32 @@ Session-by-session record of work completed.
 ### Files created
 - `vitest.config.ts` - Vitest configuration with Cloudflare Workers pool
 - `src/test-utils/email-fixtures.ts` - Mock email factories for testing
-- `src/worker.test.ts` - 33 unit tests for pure functions
 
 ### Current state
 - All 8 features complete and tested (passes: true)
 - 33 unit tests passing
 - TypeScript compiles clean
 - Ready for deployment and real-world E2E testing
+
+---
+
+## 2026-01 - Address-Based Routing & Email Pipelines
+
+### What was done
+- Implemented address-based email routing (`extractRoute()`) with 4 routes:
+  - `email-to-obsidian@` → task pipeline (original behavior)
+  - `newsletter@` / `newsletters@` → newsletter pipeline
+  - `claude@` → agent message pipeline (Phase 2 hook)
+  - catch-all → inbox with header-based newsletter detection fallback
+- Newsletter detection via `List-Unsubscribe` header (RFC 2369)
+- Newsletter-specific markdown generation with excerpt + "view in browser" link
+- Newsletter name extraction from sender display name
+- "View in browser" URL extraction from newsletter HTML
+- Agent message pipeline with `status: pending` for future AI processing
+- Separate folder routing: `NEWSLETTERS/`, `AGENT MESSAGES/`, `TASKS FROM EMAIL/`
+- Audit copy forwarding (unconditional forward to `FORWARD_TO` address)
+- Attachment handling: save to R2, wikilink in markdown notes
+- Email routing report via Cloudflare GraphQL Analytics (daily cron)
 
 ---
 
@@ -78,11 +97,29 @@ Session-by-session record of work completed.
 - Migrated progress tracking from claude-progress.txt to planning/progress.md
 - Migrated feature tracking from feature_list.json to planning/backlog.md
 - Set up git hooks (.githooks/commit-msg)
-- Registered in forerunner_repos.json
 - Created knowledge/sources.json for provenance tracking
 - Removed deprecated root files
+- Migrated knowledge docs to external Library
+- Security scrub of personal data from source and config
+- README rewrite for address-based routing and full project scope
+
+---
+
+## 2026-02 - Newsletter & Attachment Refinements
+
+### What was done (merged via PRs)
+- **PR #10**: Replaced full HTML newsletter conversion with summary + link approach
+  - Newsletter notes now show an excerpt (stripped boilerplate) + prominent browser link
+  - Better rendering in Obsidian vs full HTML-to-markdown dumps
+- **PR #12**: Added Readwise archive protect/restore scripts
+  - `scripts/readwise-protect.mjs` - snapshot items before bulk purge
+  - `scripts/readwise-restore.mjs` - restore protected items from manifest
+- **PR #13**: Refactored test fixture to use `Partial<ParsedEmail>` type
+- **PR #11**: Added attachment wikilinks (`![[...]]`) to agent message notes
+- **PR #14**: Expanded newsletter summaries — HTML→Markdown via Turndown before excerpting, 2000-char limit
 
 ### Current state
-- Repository modernized to workspace conventions
-- All features complete, 33 tests passing
-- Next: deploy and manual E2E testing
+- 87 tests passing, typecheck clean
+- 4 email routes operational (task, newsletter, agent, inbox)
+- All feature branches consolidated into dev
+- Dependabot vitest 4.x PRs closed (blocked by @cloudflare/vitest-pool-workers peer dep)
