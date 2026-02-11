@@ -15,10 +15,12 @@ export interface Env {
   NEWSLETTER_FOLDER: string;
   AGENT_FOLDER: string;
   FORWARD_TO: string;
+  WORKER_URL: string;
   CF_API_TOKEN: string;
   CF_ACCOUNT_ID: string;
   CF_ZONE_IDS: string;
   CF_ZONE_NAMES: string;
+  ATTACHMENT_RETENTION_DAYS: string;
 }
 
 export type EmailSource = 'gmail' | 'outlook' | 'icloud' | 'unknown';
@@ -57,11 +59,14 @@ export interface ParsedEmail {
   subject: string;
   date: Date;
   body: string; // Markdown-converted body (or excerpt for newsletters)
+  rawHtml?: string; // Original HTML for newsletters (used for R2-hosted fallback)
   source: EmailSource;
   attachments: Email['attachments'];
+  attachmentUrls: string[];
   isNewsletter: boolean;
   newsletterName: string;
   viewInBrowserUrl: string | null;
+  topic?: string;
 }
 
 // Initialize Turndown for HTML to Markdown conversion (regular emails)
@@ -71,10 +76,99 @@ const turndownService = new TurndownService({
   bulletListMarker: '-',
 });
 
+// --- Newsletter Topic Classification ---
+
+const NEWSLETTER_TOPIC_MAP: Record<string, string> = {
+  // Lowercase newsletter name or email → topic.
+  // Static mapping takes priority over keyword detection.
+  // 'dense discovery': 'Design',
+  // 'tldr': 'Tech',
+};
+
+const TOPIC_EMOJI: Record<string, string> = {
+  'Tech': '💻',
+  'Design': '🎨',
+  'News': '📰',
+  'Business': '💼',
+  'Culture': '🌍',
+  'General': '📬',
+};
+
+const TOPIC_KEYWORDS: [RegExp, string][] = [
+  [/\b(css|design|ux|ui|typography|figma|font|layout|visual)\b/i, 'Design'],
+  [/\b(ai|startup|developer|engineer|code|programming|tech|software|api|cloud|saas)\b/i, 'Tech'],
+  [/\b(market|financ|econom|invest|revenue|business|strateg)\b/i, 'Business'],
+  [/\b(breaking|politic|world|daily briefing|headline|report)\b/i, 'News'],
+  [/\b(culture|media|social|community|internet|meme|podcast)\b/i, 'Culture'],
+];
+
+const DEFAULT_TOPIC = 'General';
+const TOPIC_ORDER = ['Tech', 'Design', 'Business', 'News', 'Culture', 'General'];
+
+/**
+ * Detect topic for a newsletter based on static map, then keyword fallback.
+ */
+export function detectNewsletterTopic(name: string, subject: string): string {
+  // Check static map (lowercase name)
+  const mapped = NEWSLETTER_TOPIC_MAP[name.toLowerCase()];
+  if (mapped) return mapped;
+
+  // Keyword detection on subject
+  for (const [pattern, topic] of TOPIC_KEYWORDS) {
+    if (pattern.test(subject)) return topic;
+  }
+
+  return DEFAULT_TOPIC;
+}
+
+/**
+ * Get the emoji marker for a topic.
+ */
+export function getTopicEmoji(topic: string): string {
+  return TOPIC_EMOJI[topic] || '📬';
+}
 
 export default {
+  async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+    const url = new URL(request.url);
+
+    // Serve newsletter HTML from R2: GET /newsletter/{YYYY-MM-DD}/{slug}.html
+    const newsletterMatch = url.pathname.match(/^\/newsletter\/(\d{4}-\d{2}-\d{2})\/(.+\.html)$/);
+    if (newsletterMatch && request.method === 'GET') {
+      const [, date, filename] = newsletterMatch;
+      const r2Key = `_newsletter-html/${date}/${filename}`;
+      const object = await env.OBSIDIAN_BUCKET.get(r2Key);
+      if (!object) {
+        return new Response('Newsletter not found', { status: 404 });
+      }
+      return new Response(object.body, {
+        headers: { 'Content-Type': 'text/html; charset=utf-8' },
+      });
+    }
+
+    // Serve attachments from R2: GET /attachment/{messageId}/{filename}
+    const attachmentMatch = url.pathname.match(/^\/attachment\/([^/]+)\/(.+)$/);
+    if (attachmentMatch && request.method === 'GET') {
+      const [, messageId, filename] = attachmentMatch;
+      const r2Key = `_attachments/${messageId}/${filename}`;
+      const object = await env.OBSIDIAN_BUCKET.get(r2Key);
+      if (!object) {
+        return new Response('Attachment not found', { status: 404 });
+      }
+      return new Response(object.body, {
+        headers: {
+          'Content-Type': object.httpMetadata?.contentType || 'application/octet-stream',
+          'Content-Disposition': 'inline',
+        },
+      });
+    }
+
+    return new Response('OK', { status: 200 });
+  },
+
   async scheduled(event: ScheduledEvent, env: Env, ctx: ExecutionContext): Promise<void> {
     ctx.waitUntil(generateEmailRoutingReport(env));
+    ctx.waitUntil(purgeOldAttachments(env));
   },
 
   async email(message: ForwardableEmailMessage, env: Env, ctx: ExecutionContext): Promise<void> {
@@ -96,15 +190,26 @@ export default {
       // Parse the incoming email (route determines which Turndown service to use)
       const parsed = await parseEmail(message, route);
 
-      // Route to the correct pipeline
+      // Newsletter route → digest pipeline (both explicit and header-detected)
+      if (route === 'newsletter' || (route === 'inbox' && parsed.isNewsletter)) {
+        const readUrl = await saveNewsletterHtml(env, parsed);
+        await appendToDigest(env, parsed, readUrl);
+        return;
+      }
+
+      // Construct attachment URLs before markdown generation (URLs are deterministic)
+      if (parsed.attachments && parsed.attachments.length > 0) {
+        parsed.attachmentUrls = parsed.attachments.map(att => {
+          const safeFilename = sanitizeAttachmentFilename(att.filename || 'untitled');
+          return buildAttachmentUrl(env.WORKER_URL, parsed.messageId, safeFilename);
+        });
+      }
+
+      // Non-newsletter routes: individual file per email
       let markdown: string;
       let filename: string;
 
       switch (route) {
-        case 'newsletter':
-          markdown = generateNewsletterMarkdown(parsed);
-          filename = generateNewsletterFilename(parsed, env.NEWSLETTER_FOLDER || '0 - INBOX/NEWSLETTERS');
-          break;
         case 'agent':
           markdown = generateAgentMessageMarkdown(parsed);
           filename = generateAgentMessageFilename(parsed, env.AGENT_FOLDER || '0 - INBOX/AGENT MESSAGES');
@@ -115,14 +220,8 @@ export default {
           break;
         case 'inbox':
         default:
-          // Catch-all: fall back to header-based detection
-          if (parsed.isNewsletter) {
-            markdown = generateNewsletterMarkdown(parsed);
-            filename = generateNewsletterFilename(parsed, env.NEWSLETTER_FOLDER || '0 - INBOX/NEWSLETTERS');
-          } else {
-            markdown = generateMarkdown(parsed);
-            filename = generateFilename(parsed, env.INBOX_FOLDER || '0 - INBOX');
-          }
+          markdown = generateMarkdown(parsed);
+          filename = generateFilename(parsed, env.INBOX_FOLDER || '0 - INBOX');
           break;
       }
 
@@ -143,7 +242,7 @@ export default {
           'email-from': parsed.from.email,
           'email-source': parsed.source,
           'email-route': route,
-          'email-type': parsed.isNewsletter ? 'newsletter' : (route === 'agent' ? 'agent' : 'email'),
+          'email-type': route === 'agent' ? 'agent' : 'email',
           'created': new Date().toISOString(),
         },
       });
@@ -170,7 +269,7 @@ export default {
 /**
  * Save an attachment to R2
  */
-async function saveAttachment(env: Env, messageId: string, attachment: Email['attachments'][0]): Promise<void> {
+async function saveAttachment(env: Env, messageId: string, attachment: Email['attachments'][0]): Promise<string> {
   const safeFilename = sanitizeAttachmentFilename(attachment.filename || 'untitled');
   const attachmentPath = `_attachments/${messageId}/${safeFilename}`;
 
@@ -180,6 +279,27 @@ async function saveAttachment(env: Env, messageId: string, attachment: Email['at
     },
   });
   console.log(`Saved attachment: ${attachmentPath}`);
+
+  const workerUrl = env.WORKER_URL?.replace(/\/$/, '');
+  if (!workerUrl) return attachmentPath;
+  return `${workerUrl}/attachment/${messageId}/${safeFilename}`;
+}
+
+/**
+ * Check if a MIME type is an image type
+ */
+export function isImageMimeType(mimeType: string): boolean {
+  return mimeType.startsWith('image/');
+}
+
+/**
+ * Build an attachment URL for a given messageId and filename.
+ * Returns an HTTP URL if WORKER_URL is set, otherwise a relative path.
+ */
+export function buildAttachmentUrl(workerUrl: string | undefined, messageId: string, safeFilename: string): string {
+  const base = workerUrl?.replace(/\/$/, '');
+  if (!base) return `_attachments/${messageId}/${safeFilename}`;
+  return `${base}/attachment/${messageId}/${safeFilename}`;
 }
 
 /**
@@ -217,15 +337,18 @@ async function parseEmail(message: ForwardableEmailMessage, route: EmailRoute = 
   const newsletter = route === 'newsletter' || (route === 'inbox' && isNewsletter(email));
 
   // For newsletters: convert HTML to Markdown via Turndown then extract a
-  // generous excerpt (2000 chars) and strip boilerplate footers.
+  // short excerpt (~500 chars) for digest entries, and stash rawHtml for
+  // the R2-hosted fallback viewer.
   // For other emails: full Turndown conversion as before.
   let body: string;
+  let rawHtml: string | undefined;
   let viewInBrowserUrl: string | null = null;
 
   if (newsletter) {
     viewInBrowserUrl = email.html ? extractViewInBrowserUrl(email.html) : null;
+    rawHtml = email.html || undefined;
     const fullBody = convertBodyToMarkdown(email);
-    body = extractNewsletterExcerpt(fullBody);
+    body = extractNewsletterExcerpt(fullBody, 500);
   } else {
     body = convertBodyToMarkdown(email);
   }
@@ -233,17 +356,22 @@ async function parseEmail(message: ForwardableEmailMessage, route: EmailRoute = 
   // Detect source from headers
   const source = detectEmailSource(email);
 
+  const newsletterName = newsletter ? extractNewsletterName(email) : '';
+
   return {
     messageId: sanitizeMessageId(messageId),
     from: fromAddr,
     subject: email.subject || 'No Subject',
     date: emailDate,
     body,
+    rawHtml,
     source,
     attachments: email.attachments,
+    attachmentUrls: [],
     isNewsletter: newsletter,
-    newsletterName: newsletter ? extractNewsletterName(email) : '',
+    newsletterName,
     viewInBrowserUrl,
+    topic: newsletter ? detectNewsletterTopic(newsletterName, email.subject || '') : undefined,
   };
 }
 
@@ -367,66 +495,251 @@ export function extractNewsletterExcerpt(text: string, maxLength: number = 2000)
 }
 
 
+// --- Newsletter Digest Functions ---
+
 /**
- * Generate newsletter-specific markdown — summary + link approach.
- * Instead of converting the full HTML body (which renders poorly in Obsidian),
- * show a short excerpt with a prominent "view in browser" link.
+ * Generate the R2 path for a daily newsletter digest file.
  */
-export function generateNewsletterMarkdown(email: ParsedEmail): string {
-  const createdDate = formatDate(email.date);
-  const newsletterName = email.newsletterName || email.from.name;
+export function generateDigestFilename(date: Date, newsletterFolder: string): string {
+  return `${newsletterFolder}/${formatDate(date)} - Newsletter Digest.md`;
+}
 
-  const linkSection = email.viewInBrowserUrl
-    ? `[Read full newsletter →](${email.viewInBrowserUrl})`
-    : '*No "view in browser" link found — check your email client for the original.*';
+/**
+ * Generate the R2 path for storing a newsletter's raw HTML.
+ * Uses `_newsletter-html/` prefix so Remotely Save skips syncing these.
+ */
+export function generateNewsletterHtmlPath(date: Date, newsletterName: string, subject: string): string {
+  const dateStr = formatDate(date);
+  const slug = `${newsletterName}-${subject}`
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 80);
+  return `_newsletter-html/${dateStr}/${slug}.html`;
+}
 
-  const excerptSection = email.body
-    ? `---\n\n${email.body}`
+/**
+ * Render one newsletter section for the daily digest.
+ */
+export function generateDigestEntry(parsed: ParsedEmail, readUrl: string | null): string {
+  const newsletterName = parsed.newsletterName || parsed.from.name;
+  const linkLine = readUrl
+    ? `[Read full newsletter →](${readUrl})`
+    : '';
+  const excerptBlock = parsed.body
+    ? parsed.body.split('\n').map(line => `> ${line}`).join('\n')
     : '';
 
-  return `---
+  let entry = `### ${newsletterName} — ${parsed.subject}\n**From:** ${parsed.from.email}`;
+  if (linkLine) entry += `\n${linkLine}`;
+  if (excerptBlock) entry += `\n\n${excerptBlock}`;
+  return entry;
+}
+
+/**
+ * Create the full digest markdown with frontmatter and topic-grouped entries.
+ */
+export function generateDigestMarkdown(date: Date, entries: string[], emailIds: string[], topics: string[] = []): string {
+  const dateStr = formatDate(date);
+
+  // Normalize topics: ensure same length as entries, default to 'General'
+  const normalizedTopics = entries.map((_, i) => topics[i] || DEFAULT_TOPIC);
+
+  const frontmatter = `---
 tags:
   - newsletter
-created: ${createdDate}
-from: ${email.from.email}
-newsletter_name: ${escapeYaml(newsletterName)}
-subject: ${escapeYaml(email.subject)}
-email_id: ${email.messageId}
-source: ${email.source}
-status: unread
----
+  - digest
+created: ${dateStr}
+newsletter_count: ${entries.length}
+email_ids:
+${emailIds.map(id => `  - ${id}`).join('\n')}
+email_topics:
+${normalizedTopics.map(t => `  - ${t}`).join('\n')}
+---`;
 
-## ${newsletterName} — ${email.subject}
+  // Group entries by topic (preserve per-topic order)
+  const grouped = new Map<string, string[]>();
+  for (let i = 0; i < entries.length; i++) {
+    const topic = normalizedTopics[i];
+    if (!grouped.has(topic)) grouped.set(topic, []);
+    grouped.get(topic)!.push(entries[i]);
+  }
 
-${linkSection}
+  // Render sections in TOPIC_ORDER, skip empty topics
+  const sections: string[] = [];
+  for (const topic of TOPIC_ORDER) {
+    const topicEntries = grouped.get(topic);
+    if (!topicEntries || topicEntries.length === 0) continue;
+    const emoji = getTopicEmoji(topic);
+    const header = `## ${emoji} ${topic}`;
+    const body = topicEntries.join('\n\n---\n\n');
+    sections.push(`${header}\n\n${body}`);
+  }
 
-${excerptSection}
+  return `${frontmatter}
+
+# Newsletter Digest — ${dateStr}
+
+${sections.join('\n\n')}
 `;
 }
 
 /**
- * Generate filename for newsletter notes.
- * Uses newsletter name prefix for better sorting in Obsidian.
+ * Parse an existing digest to extract entries, email IDs, and topics.
  */
-export function generateNewsletterFilename(email: ParsedEmail, newsletterFolder: string): string {
-  const date = formatDate(email.date);
-  const newsletterName = email.newsletterName || email.from.name;
+export function parseDigestMarkdown(content: string): { entries: string[]; emailIds: string[]; topics: string[] } {
+  // Extract email_ids and email_topics from frontmatter
+  const frontmatterMatch = content.match(/^---\n([\s\S]*?)\n---/);
+  const emailIds: string[] = [];
+  const topics: string[] = [];
+  if (frontmatterMatch) {
+    let currentList: string[] | null = null;
+    for (const line of frontmatterMatch[1].split('\n')) {
+      if (line.trim() === 'email_ids:') {
+        currentList = emailIds;
+        continue;
+      }
+      if (line.trim() === 'email_topics:') {
+        currentList = topics;
+        continue;
+      }
+      if (currentList) {
+        const itemMatch = line.match(/^\s+-\s+(.+)$/);
+        if (itemMatch) {
+          currentList.push(itemMatch[1]);
+        } else {
+          currentList = null;
+        }
+      }
+    }
+  }
 
-  // Clean newsletter name and subject for filename
-  const safeName = newsletterName
-    .replace(/[/\\?%*:|"<>]/g, '-')
-    .replace(/\s+/g, ' ')
-    .trim()
-    .slice(0, 40);
+  // Extract entries from topic-grouped body
+  const bodyMatch = content.match(/^# Newsletter Digest — .+\n\n([\s\S]*)$/m);
+  const entries: string[] = [];
+  const parsedTopics: string[] = [];
 
-  const safeSubject = email.subject
-    .replace(/^(\[fwd:?\]|fwd:?)\s*/i, '')
-    .replace(/[/\\?%*:|"<>]/g, '-')
-    .replace(/\s+/g, ' ')
-    .trim()
-    .slice(0, 80);
+  if (bodyMatch) {
+    const body = bodyMatch[1];
 
-  return `${newsletterFolder}/${date} - ${safeName} - ${safeSubject}.md`;
+    // Check if the body uses topic sections (## emoji Topic)
+    const hasTopicSections = /^## .+ \S+$/m.test(body);
+
+    if (hasTopicSections) {
+      // Parse topic-grouped format: split by ## headers, then by ### entries
+      const sectionPattern = /^## .+ (.+)$/gm;
+      let match;
+      const sectionStarts: { topic: string; index: number }[] = [];
+
+      while ((match = sectionPattern.exec(body)) !== null) {
+        sectionStarts.push({ topic: match[1], index: match.index });
+      }
+
+      for (let i = 0; i < sectionStarts.length; i++) {
+        const start = sectionStarts[i].index;
+        const end = i + 1 < sectionStarts.length ? sectionStarts[i + 1].index : body.length;
+        const sectionBody = body.slice(start, end);
+        const topic = sectionStarts[i].topic;
+
+        // Remove the ## header line, then split entries by ---
+        const withoutHeader = sectionBody.replace(/^## .+\n\n/, '');
+        const rawEntries = withoutHeader.split('\n\n---\n\n');
+        for (const entry of rawEntries) {
+          const trimmed = entry.trim();
+          if (trimmed) {
+            entries.push(trimmed);
+            parsedTopics.push(topic);
+          }
+        }
+      }
+    } else {
+      // Legacy flat format: split by ---
+      const rawEntries = body.split('\n\n---\n\n');
+      for (const entry of rawEntries) {
+        const trimmed = entry.trim();
+        if (trimmed) entries.push(trimmed);
+      }
+    }
+  }
+
+  // Use frontmatter topics if available, then parsed topics, then default
+  const finalTopics = topics.length > 0
+    ? topics
+    : parsedTopics.length > 0
+      ? parsedTopics
+      : entries.map(() => DEFAULT_TOPIC);
+
+  return { entries, emailIds, topics: finalTopics };
+}
+
+/**
+ * Save the newsletter's full HTML to R2 and return a URL for reading it.
+ * If the newsletter already has a "view in browser" URL, returns that directly.
+ */
+export async function saveNewsletterHtml(env: Env, parsed: ParsedEmail): Promise<string | null> {
+  if (parsed.viewInBrowserUrl) {
+    return parsed.viewInBrowserUrl;
+  }
+  if (!parsed.rawHtml) {
+    return null;
+  }
+
+  const htmlPath = generateNewsletterHtmlPath(parsed.date, parsed.newsletterName || parsed.from.name, parsed.subject);
+  await env.OBSIDIAN_BUCKET.put(htmlPath, parsed.rawHtml, {
+    httpMetadata: { contentType: 'text/html; charset=utf-8' },
+  });
+
+  const workerUrl = env.WORKER_URL?.replace(/\/$/, '');
+  if (!workerUrl) return null;
+  return `${workerUrl}/newsletter/${formatDate(parsed.date)}/${htmlPath.split('/').pop()}`;
+}
+
+/**
+ * Append a newsletter entry to the daily digest (read-modify-write).
+ * Creates the digest if it doesn't exist yet; deduplicates by email ID.
+ */
+export async function appendToDigest(env: Env, parsed: ParsedEmail, readUrl: string | null): Promise<void> {
+  const newsletterFolder = env.NEWSLETTER_FOLDER || '0 - INBOX/NEWSLETTERS';
+  const digestPath = generateDigestFilename(parsed.date, newsletterFolder);
+
+  // Read existing digest (or start fresh)
+  const existing = await env.OBSIDIAN_BUCKET.get(digestPath);
+  let entries: string[] = [];
+  let emailIds: string[] = [];
+  let topics: string[] = [];
+
+  if (existing) {
+    const content = await existing.text();
+    const parsed_digest = parseDigestMarkdown(content);
+    entries = parsed_digest.entries;
+    emailIds = parsed_digest.emailIds;
+    topics = parsed_digest.topics;
+  }
+
+  // Dedup check
+  if (emailIds.includes(parsed.messageId)) {
+    console.log(`Digest dedup: ${parsed.messageId} already in digest`);
+    return;
+  }
+
+  // Append new entry
+  const newEntry = generateDigestEntry(parsed, readUrl);
+  entries.push(newEntry);
+  emailIds.push(parsed.messageId);
+  topics.push(parsed.topic || DEFAULT_TOPIC);
+
+  // Write back
+  const markdown = generateDigestMarkdown(parsed.date, entries, emailIds, topics);
+  await env.OBSIDIAN_BUCKET.put(digestPath, markdown, {
+    httpMetadata: { contentType: 'text/markdown; charset=utf-8' },
+    customMetadata: {
+      'report-type': 'newsletter-digest',
+      'newsletter-count': String(entries.length),
+      'created': new Date().toISOString(),
+    },
+  });
+
+  console.log(`Digest updated: ${parsed.messageId} → ${digestPath} (${entries.length} entries)`);
 }
 
 /**
@@ -440,10 +753,13 @@ export function generateAgentMessageMarkdown(email: ParsedEmail): string {
   let attachmentsSection = '';
   if (email.attachments && email.attachments.length > 0) {
     const attachmentLinks = email.attachments
-      .map(att => {
-        const safeFilename = sanitizeAttachmentFilename(att.filename || 'untitled');
-        const attachmentPath = `_attachments/${email.messageId}/${safeFilename}`;
-        return `- ![[${attachmentPath}]]`;
+      .map((att, i) => {
+        const filename = att.filename || 'untitled';
+        const url = email.attachmentUrls[i] || `_attachments/${email.messageId}/${sanitizeAttachmentFilename(filename)}`;
+        if (isImageMimeType(att.mimeType)) {
+          return `- ![${filename}](${url})`;
+        }
+        return `- [${filename}](${url})`;
       })
       .join('\n');
     attachmentsSection = `---
@@ -532,11 +848,13 @@ export function generateMarkdown(email: ParsedEmail): string {
   let attachmentsSection = '';
   if (email.attachments && email.attachments.length > 0) {
     const attachmentLinks = email.attachments
-      .map(att => {
-        const safeFilename = sanitizeAttachmentFilename(att.filename || 'untitled');
-        const attachmentPath = `_attachments/${email.messageId}/${safeFilename}`;
-        // Use Obsidian's wikilink format for attachments
-        return `- ![[${attachmentPath}]]`;
+      .map((att, i) => {
+        const filename = att.filename || 'untitled';
+        const url = email.attachmentUrls[i] || `_attachments/${email.messageId}/${sanitizeAttachmentFilename(filename)}`;
+        if (isImageMimeType(att.mimeType)) {
+          return `- ![${filename}](${url})`;
+        }
+        return `- [${filename}](${url})`;
       })
       .join('\n');
     attachmentsSection = `---
@@ -637,6 +955,56 @@ export function generateMessageId(): string {
   return `${Date.now()}-${Math.random().toString(36).slice(2, 11)}`;
 }
 
+// --- Attachment Purge (Cron) ---
+
+/**
+ * Purge attachments older than ATTACHMENT_RETENTION_DAYS.
+ * Lists all objects under `_attachments/`, groups by messageId folder,
+ * and deletes folders where all objects are older than the retention period.
+ */
+async function purgeOldAttachments(env: Env): Promise<void> {
+  const retentionDays = parseInt(env.ATTACHMENT_RETENTION_DAYS || '90', 10);
+  if (retentionDays <= 0) {
+    console.log('Attachment purge: disabled (retention days <= 0)');
+    return;
+  }
+
+  const cutoff = new Date(Date.now() - retentionDays * 24 * 60 * 60 * 1000);
+  console.log(`Attachment purge: removing attachments older than ${retentionDays} days (before ${cutoff.toISOString()})`);
+
+  let cursor: string | undefined;
+  let totalDeleted = 0;
+  const keysToDelete: string[] = [];
+
+  // Paginate through all _attachments/ objects
+  do {
+    const listResult = await env.OBSIDIAN_BUCKET.list({
+      prefix: '_attachments/',
+      cursor,
+    });
+
+    for (const object of listResult.objects) {
+      if (object.uploaded < cutoff) {
+        keysToDelete.push(object.key);
+      }
+    }
+
+    cursor = listResult.truncated ? listResult.cursor : undefined;
+  } while (cursor);
+
+  // Delete in batches (R2 delete supports single keys)
+  for (const key of keysToDelete) {
+    await env.OBSIDIAN_BUCKET.delete(key);
+    totalDeleted++;
+  }
+
+  if (totalDeleted > 0) {
+    console.log(`Attachment purge: deleted ${totalDeleted} expired attachments`);
+  } else {
+    console.log('Attachment purge: no expired attachments found');
+  }
+}
+
 // --- Email Routing Report (Cron) ---
 
 interface EmailRoutingEvent {
@@ -695,6 +1063,21 @@ async function generateEmailRoutingReport(env: Env): Promise<void> {
       console.error(`Failed to query zone ${zoneName}:`, err);
       allEvents.push({ zone: zoneName, events: [] });
     }
+  }
+
+  const totalEvents = allEvents.reduce((sum, z) => sum + z.events.length, 0);
+  const totalFailures = allEvents.reduce(
+    (sum, z) => sum + z.events.filter(e => e.status !== 'delivered').length, 0,
+  );
+
+  if (totalEvents === 0 && totalFailures === 0) {
+    console.log('Email routing report: no events in the last 24h, skipping write');
+    return;
+  }
+
+  if (totalFailures === 0) {
+    console.log(`Email routing report: ${totalEvents} events, all delivered, skipping write`);
+    return;
   }
 
   const markdown = buildReportMarkdown(allEvents, dateStr, yesterday, now);
