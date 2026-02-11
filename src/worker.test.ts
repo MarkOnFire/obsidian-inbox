@@ -26,6 +26,8 @@ import {
   extractRoute,
   generateAgentMessageMarkdown,
   generateAgentMessageFilename,
+  detectNewsletterTopic,
+  getTopicEmoji,
   type ParsedEmail,
   type EmailSource,
   type EmailRoute,
@@ -447,6 +449,61 @@ describe('extractNewsletterExcerpt', () => {
   });
 });
 
+// --- Newsletter Topic Detection ---
+
+describe('detectNewsletterTopic', () => {
+  it('matches keyword in subject — Tech', () => {
+    expect(detectNewsletterTopic('TLDR', 'Top AI and startup news')).toBe('Tech');
+  });
+
+  it('matches keyword in subject — Design', () => {
+    expect(detectNewsletterTopic('Dense Discovery', 'CSS and typography roundup')).toBe('Design');
+  });
+
+  it('matches keyword in subject — Business', () => {
+    expect(detectNewsletterTopic('Some Newsletter', 'Market economics this week')).toBe('Business');
+  });
+
+  it('matches keyword in subject — News', () => {
+    expect(detectNewsletterTopic('Daily Brief', 'Breaking headlines today')).toBe('News');
+  });
+
+  it('matches keyword in subject — Culture', () => {
+    expect(detectNewsletterTopic('Garbage Day', 'Internet culture and meme roundup')).toBe('Culture');
+  });
+
+  it('defaults to General when no keywords match', () => {
+    expect(detectNewsletterTopic('Random Newsletter', 'Just another day')).toBe('General');
+  });
+
+  it('is case-insensitive for keyword matching', () => {
+    expect(detectNewsletterTopic('test', 'TOP AI NEWS')).toBe('Tech');
+    expect(detectNewsletterTopic('test', 'css Design Tips')).toBe('Design');
+  });
+
+  it('prefers static map over keyword detection', () => {
+    // No static entries by default, but test the priority logic:
+    // With keywords in subject, keyword detection should work
+    expect(detectNewsletterTopic('unknown', 'New developer tools')).toBe('Tech');
+  });
+});
+
+describe('getTopicEmoji', () => {
+  it('returns correct emoji for known topics', () => {
+    expect(getTopicEmoji('Tech')).toBe('💻');
+    expect(getTopicEmoji('Design')).toBe('🎨');
+    expect(getTopicEmoji('News')).toBe('📰');
+    expect(getTopicEmoji('Business')).toBe('💼');
+    expect(getTopicEmoji('Culture')).toBe('🌍');
+    expect(getTopicEmoji('General')).toBe('📬');
+  });
+
+  it('defaults to 📬 for unknown topics', () => {
+    expect(getTopicEmoji('Unknown')).toBe('📬');
+    expect(getTopicEmoji('')).toBe('📬');
+  });
+});
+
 // --- Newsletter Digest ---
 
 describe('generateDigestFilename', () => {
@@ -561,44 +618,154 @@ describe('generateDigestEntry', () => {
 });
 
 describe('generateDigestMarkdown', () => {
-  it('generates digest with single entry', () => {
+  it('generates digest with single entry and topic section', () => {
     const date = new Date('2026-02-03T10:00:00Z');
     const entries = ['### Test — Subject\n**From:** a@b.com'];
     const emailIds = ['id-1'];
+    const topics = ['Tech'];
 
-    const md = generateDigestMarkdown(date, entries, emailIds);
+    const md = generateDigestMarkdown(date, entries, emailIds, topics);
     expect(md).toContain('tags:');
     expect(md).toContain('- newsletter');
     expect(md).toContain('- digest');
     expect(md).toContain('created: 2026-02-03');
     expect(md).toContain('newsletter_count: 1');
     expect(md).toContain('  - id-1');
+    expect(md).toContain('email_topics:');
+    expect(md).toContain('  - Tech');
     expect(md).toContain('# Newsletter Digest — 2026-02-03');
+    expect(md).toContain('## 💻 Tech');
     expect(md).toContain('### Test — Subject');
   });
 
-  it('generates digest with multiple entries separated by ---', () => {
+  it('groups entries by topic with --- separator within sections', () => {
     const date = new Date('2026-02-03T10:00:00Z');
     const entries = ['### A — Sub1\n**From:** a@b.com', '### B — Sub2\n**From:** c@d.com'];
     const emailIds = ['id-1', 'id-2'];
+    const topics = ['Tech', 'Tech'];
 
-    const md = generateDigestMarkdown(date, entries, emailIds);
+    const md = generateDigestMarkdown(date, entries, emailIds, topics);
     expect(md).toContain('newsletter_count: 2');
-    expect(md).toContain('  - id-1');
-    expect(md).toContain('  - id-2');
-    // Entries separated by ---
+    expect(md).toContain('## 💻 Tech');
+    // Both entries under same topic, separated by ---
     expect(md).toContain('---\n\n### B — Sub2');
   });
 
-  it('includes all email IDs in frontmatter', () => {
+  it('renders multiple topic sections in correct order', () => {
     const date = new Date('2026-02-03T10:00:00Z');
-    const md = generateDigestMarkdown(date, ['e1', 'e2', 'e3'], ['a', 'b', 'c']);
+    const entries = ['### Design — CSS Tips\n**From:** d@e.com', '### TLDR — Tech News\n**From:** a@b.com'];
+    const emailIds = ['id-1', 'id-2'];
+    const topics = ['Design', 'Tech'];
+
+    const md = generateDigestMarkdown(date, entries, emailIds, topics);
+    // Tech comes before Design in TOPIC_ORDER
+    const techIdx = md.indexOf('## 💻 Tech');
+    const designIdx = md.indexOf('## 🎨 Design');
+    expect(techIdx).toBeGreaterThan(-1);
+    expect(designIdx).toBeGreaterThan(-1);
+    expect(techIdx).toBeLessThan(designIdx);
+  });
+
+  it('includes all email IDs and topics in frontmatter', () => {
+    const date = new Date('2026-02-03T10:00:00Z');
+    const md = generateDigestMarkdown(date, ['e1', 'e2', 'e3'], ['a', 'b', 'c'], ['Tech', 'Design', 'General']);
     expect(md).toContain('  - a\n  - b\n  - c');
+    expect(md).toContain('email_topics:\n  - Tech\n  - Design\n  - General');
+  });
+
+  it('defaults missing topics to General', () => {
+    const date = new Date('2026-02-03T10:00:00Z');
+    const md = generateDigestMarkdown(date, ['### A\n**From:** a@b.com'], ['id-1']);
+    expect(md).toContain('email_topics:\n  - General');
+    expect(md).toContain('## 📬 General');
   });
 });
 
 describe('parseDigestMarkdown', () => {
-  it('extracts entries and email IDs', () => {
+  it('extracts entries, email IDs, and topics from grouped format', () => {
+    const md = `---
+tags:
+  - newsletter
+  - digest
+created: 2026-02-03
+newsletter_count: 2
+email_ids:
+  - id-1
+  - id-2
+email_topics:
+  - Tech
+  - Design
+---
+
+# Newsletter Digest — 2026-02-03
+
+## 💻 Tech
+
+### A — Sub1
+**From:** a@b.com
+
+## 🎨 Design
+
+### B — Sub2
+**From:** c@d.com
+`;
+
+    const result = parseDigestMarkdown(md);
+    expect(result.emailIds).toEqual(['id-1', 'id-2']);
+    expect(result.topics).toEqual(['Tech', 'Design']);
+    expect(result.entries).toHaveLength(2);
+    expect(result.entries[0]).toContain('### A — Sub1');
+    expect(result.entries[1]).toContain('### B — Sub2');
+  });
+
+  it('handles single entry digest', () => {
+    const md = `---
+tags:
+  - newsletter
+  - digest
+created: 2026-02-03
+newsletter_count: 1
+email_ids:
+  - id-1
+email_topics:
+  - General
+---
+
+# Newsletter Digest — 2026-02-03
+
+## 📬 General
+
+### A — Sub1
+**From:** a@b.com
+`;
+
+    const result = parseDigestMarkdown(md);
+    expect(result.emailIds).toEqual(['id-1']);
+    expect(result.topics).toEqual(['General']);
+    expect(result.entries).toHaveLength(1);
+  });
+
+  it('round-trips with generateDigestMarkdown', () => {
+    const date = new Date('2026-02-03T10:00:00Z');
+    const entries = [
+      '### Design Weekly — Issue #47\n**From:** hello@designweekly.com\n[Read full newsletter →](https://example.com)\n\n> Great CSS updates.',
+      '### Morning Brew — Daily\n**From:** crew@brew.com\n\n> Top stories today.',
+    ];
+    const emailIds = ['id-1', 'id-2'];
+    const topics = ['Design', 'Tech'];
+
+    const md = generateDigestMarkdown(date, entries, emailIds, topics);
+    const parsed = parseDigestMarkdown(md);
+
+    // All arrays are sorted by TOPIC_ORDER (Tech before Design)
+    expect(parsed.emailIds).toEqual(['id-2', 'id-1']);
+    expect(parsed.topics).toEqual(['Tech', 'Design']);
+    expect(parsed.entries).toHaveLength(2);
+    expect(parsed.entries[0]).toContain('### Morning Brew — Daily');
+    expect(parsed.entries[1]).toContain('### Design Weekly — Issue #47');
+  });
+
+  it('handles legacy flat format without topics (defaults to General)', () => {
     const md = `---
 tags:
   - newsletter
@@ -624,53 +791,14 @@ email_ids:
     const result = parseDigestMarkdown(md);
     expect(result.emailIds).toEqual(['id-1', 'id-2']);
     expect(result.entries).toHaveLength(2);
-    expect(result.entries[0]).toContain('### A — Sub1');
-    expect(result.entries[1]).toContain('### B — Sub2');
-  });
-
-  it('handles single entry digest', () => {
-    const md = `---
-tags:
-  - newsletter
-  - digest
-created: 2026-02-03
-newsletter_count: 1
-email_ids:
-  - id-1
----
-
-# Newsletter Digest — 2026-02-03
-
-### A — Sub1
-**From:** a@b.com
-`;
-
-    const result = parseDigestMarkdown(md);
-    expect(result.emailIds).toEqual(['id-1']);
-    expect(result.entries).toHaveLength(1);
-  });
-
-  it('round-trips with generateDigestMarkdown', () => {
-    const date = new Date('2026-02-03T10:00:00Z');
-    const entries = [
-      '### Design Weekly — Issue #47\n**From:** hello@designweekly.com\n[Read full newsletter →](https://example.com)\n\n> Great CSS updates.',
-      '### Morning Brew — Daily\n**From:** crew@brew.com\n\n> Top stories today.',
-    ];
-    const emailIds = ['id-1', 'id-2'];
-
-    const md = generateDigestMarkdown(date, entries, emailIds);
-    const parsed = parseDigestMarkdown(md);
-
-    expect(parsed.emailIds).toEqual(emailIds);
-    expect(parsed.entries).toHaveLength(2);
-    expect(parsed.entries[0]).toContain('### Design Weekly — Issue #47');
-    expect(parsed.entries[1]).toContain('### Morning Brew — Daily');
+    expect(result.topics).toEqual(['General', 'General']);
   });
 
   it('handles empty/malformed content gracefully', () => {
     const result = parseDigestMarkdown('');
     expect(result.emailIds).toEqual([]);
     expect(result.entries).toEqual([]);
+    expect(result.topics).toEqual([]);
   });
 });
 

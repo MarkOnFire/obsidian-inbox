@@ -545,24 +545,36 @@ export function generateDigestMarkdown(date: Date, entries: string[], emailIds: 
   // Normalize topics: ensure same length as entries, default to 'General'
   const normalizedTopics = entries.map((_, i) => topics[i] || DEFAULT_TOPIC);
 
+  // Sort all parallel arrays by TOPIC_ORDER so frontmatter and body stay in sync
+  const indices = entries.map((_, i) => i);
+  indices.sort((a, b) => {
+    const orderA = TOPIC_ORDER.indexOf(normalizedTopics[a]);
+    const orderB = TOPIC_ORDER.indexOf(normalizedTopics[b]);
+    return (orderA === -1 ? TOPIC_ORDER.length : orderA) - (orderB === -1 ? TOPIC_ORDER.length : orderB);
+  });
+
+  const sortedEntries = indices.map(i => entries[i]);
+  const sortedEmailIds = indices.map(i => emailIds[i]);
+  const sortedTopics = indices.map(i => normalizedTopics[i]);
+
   const frontmatter = `---
 tags:
   - newsletter
   - digest
 created: ${dateStr}
-newsletter_count: ${entries.length}
+newsletter_count: ${sortedEntries.length}
 email_ids:
-${emailIds.map(id => `  - ${id}`).join('\n')}
+${sortedEmailIds.map(id => `  - ${id}`).join('\n')}
 email_topics:
-${normalizedTopics.map(t => `  - ${t}`).join('\n')}
+${sortedTopics.map(t => `  - ${t}`).join('\n')}
 ---`;
 
-  // Group entries by topic (preserve per-topic order)
+  // Group sorted entries by topic
   const grouped = new Map<string, string[]>();
-  for (let i = 0; i < entries.length; i++) {
-    const topic = normalizedTopics[i];
+  for (let i = 0; i < sortedEntries.length; i++) {
+    const topic = sortedTopics[i];
     if (!grouped.has(topic)) grouped.set(topic, []);
-    grouped.get(topic)!.push(entries[i]);
+    grouped.get(topic)!.push(sortedEntries[i]);
   }
 
   // Render sections in TOPIC_ORDER, skip empty topics
