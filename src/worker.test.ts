@@ -13,14 +13,21 @@ import {
   generateMarkdown,
   detectEmailSource,
   isNewsletter,
+  isImageMimeType,
+  buildAttachmentUrl,
   extractNewsletterName,
   extractViewInBrowserUrl,
   extractNewsletterExcerpt,
-  generateNewsletterMarkdown,
-  generateNewsletterFilename,
+  generateDigestFilename,
+  generateNewsletterHtmlPath,
+  generateDigestEntry,
+  generateDigestMarkdown,
+  parseDigestMarkdown,
   extractRoute,
   generateAgentMessageMarkdown,
   generateAgentMessageFilename,
+  detectNewsletterTopic,
+  getTopicEmoji,
   type ParsedEmail,
   type EmailSource,
   type EmailRoute,
@@ -442,155 +449,356 @@ describe('extractNewsletterExcerpt', () => {
   });
 });
 
-describe('generateNewsletterMarkdown', () => {
-  it('generates newsletter markdown with correct frontmatter', () => {
-    const email = createParsedEmail({
-      messageId: 'nl-123',
-      from: { name: 'Design Weekly', email: 'hello@designweekly.com' },
-      subject: 'Issue #47: CSS Updates',
-      date: new Date('2026-02-03T10:00:00Z'),
-      body: 'Newsletter excerpt here',
-      source: 'unknown',
-      isNewsletter: true,
-      newsletterName: 'Design Weekly',
-      viewInBrowserUrl: 'https://designweekly.com/view/47',
-    });
+// --- Newsletter Topic Detection ---
 
-    const markdown = generateNewsletterMarkdown(email);
-
-    expect(markdown).toContain('tags:');
-    expect(markdown).toContain('- newsletter');
-    expect(markdown).not.toContain('- email-task');
-    expect(markdown).toContain('newsletter_name: Design Weekly');
-    expect(markdown).toContain('status: unread');
-    expect(markdown).toContain('from: hello@designweekly.com');
-    expect(markdown).toContain('email_id: nl-123');
+describe('detectNewsletterTopic', () => {
+  it('matches keyword in subject — Tech', () => {
+    expect(detectNewsletterTopic('TLDR', 'Top AI and startup news')).toBe('Tech');
   });
 
-  it('includes "view in browser" link when available', () => {
-    const email = createParsedEmail({
-      isNewsletter: true,
-      newsletterName: 'Test Newsletter',
-      viewInBrowserUrl: 'https://example.com/view/123',
-    });
-
-    const markdown = generateNewsletterMarkdown(email);
-
-    expect(markdown).toContain('[Read full newsletter →](https://example.com/view/123)');
+  it('matches keyword in subject — Design', () => {
+    expect(detectNewsletterTopic('Dense Discovery', 'CSS and typography roundup')).toBe('Design');
   });
 
-  it('shows fallback message when no view-in-browser URL', () => {
-    const email = createParsedEmail({
-      isNewsletter: true,
-      newsletterName: 'Test Newsletter',
-      viewInBrowserUrl: null,
-    });
-
-    const markdown = generateNewsletterMarkdown(email);
-
-    expect(markdown).toContain('No "view in browser" link found');
+  it('matches keyword in subject — Business', () => {
+    expect(detectNewsletterTopic('Some Newsletter', 'Market economics this week')).toBe('Business');
   });
 
-  it('does NOT include tasks section', () => {
-    const email = createParsedEmail({
-      isNewsletter: true,
-      newsletterName: 'Test Newsletter',
-    });
-
-    const markdown = generateNewsletterMarkdown(email);
-
-    expect(markdown).not.toContain('## Tasks in this note');
-    expect(markdown).not.toContain('- [ ] Review and process this email');
+  it('matches keyword in subject — News', () => {
+    expect(detectNewsletterTopic('Daily Brief', 'Breaking headlines today')).toBe('News');
   });
 
-  it('uses newsletter name in heading', () => {
+  it('matches keyword in subject — Culture', () => {
+    expect(detectNewsletterTopic('Garbage Day', 'Internet culture and meme roundup')).toBe('Culture');
+  });
+
+  it('defaults to General when no keywords match', () => {
+    expect(detectNewsletterTopic('Random Newsletter', 'Just another day')).toBe('General');
+  });
+
+  it('is case-insensitive for keyword matching', () => {
+    expect(detectNewsletterTopic('test', 'TOP AI NEWS')).toBe('Tech');
+    expect(detectNewsletterTopic('test', 'css Design Tips')).toBe('Design');
+  });
+
+  it('prefers static map over keyword detection', () => {
+    // No static entries by default, but test the priority logic:
+    // With keywords in subject, keyword detection should work
+    expect(detectNewsletterTopic('unknown', 'New developer tools')).toBe('Tech');
+  });
+});
+
+describe('getTopicEmoji', () => {
+  it('returns correct emoji for known topics', () => {
+    expect(getTopicEmoji('Tech')).toBe('💻');
+    expect(getTopicEmoji('Design')).toBe('🎨');
+    expect(getTopicEmoji('News')).toBe('📰');
+    expect(getTopicEmoji('Business')).toBe('💼');
+    expect(getTopicEmoji('Culture')).toBe('🌍');
+    expect(getTopicEmoji('General')).toBe('📬');
+  });
+
+  it('defaults to 📬 for unknown topics', () => {
+    expect(getTopicEmoji('Unknown')).toBe('📬');
+    expect(getTopicEmoji('')).toBe('📬');
+  });
+});
+
+// --- Newsletter Digest ---
+
+describe('generateDigestFilename', () => {
+  it('generates correct path format', () => {
+    const date = new Date('2026-02-03T10:00:00Z');
+    expect(generateDigestFilename(date, '0 - INBOX/NEWSLETTERS'))
+      .toBe('0 - INBOX/NEWSLETTERS/2026-02-03 - Newsletter Digest.md');
+  });
+
+  it('uses provided folder', () => {
+    const date = new Date('2026-01-15T10:00:00Z');
+    expect(generateDigestFilename(date, 'CUSTOM'))
+      .toBe('CUSTOM/2026-01-15 - Newsletter Digest.md');
+  });
+});
+
+describe('generateNewsletterHtmlPath', () => {
+  it('generates correct path with slug', () => {
+    const date = new Date('2026-02-03T10:00:00Z');
+    const path = generateNewsletterHtmlPath(date, 'Design Weekly', 'Issue #47');
+    expect(path).toBe('_newsletter-html/2026-02-03/design-weekly-issue-47.html');
+  });
+
+  it('handles special characters in slug', () => {
+    const date = new Date('2026-02-03T10:00:00Z');
+    const path = generateNewsletterHtmlPath(date, 'The Morning Brew ☕', 'What\'s New? #100!');
+    expect(path).toMatch(/^_newsletter-html\/2026-02-03\/[a-z0-9-]+\.html$/);
+    expect(path).not.toContain('☕');
+    expect(path).not.toContain("'");
+  });
+
+  it('limits slug length to 80 chars', () => {
+    const date = new Date('2026-02-03T10:00:00Z');
+    const path = generateNewsletterHtmlPath(date, 'A'.repeat(50), 'B'.repeat(50));
+    const slug = path.split('/').pop()!.replace('.html', '');
+    expect(slug.length).toBeLessThanOrEqual(80);
+  });
+
+  it('strips leading and trailing hyphens from slug', () => {
+    const date = new Date('2026-02-03T10:00:00Z');
+    const path = generateNewsletterHtmlPath(date, '---Test---', '!!!Subject!!!');
+    const slug = path.split('/').pop()!.replace('.html', '');
+    expect(slug).not.toMatch(/^-/);
+    expect(slug).not.toMatch(/-$/);
+  });
+});
+
+describe('generateDigestEntry', () => {
+  it('renders entry with URL and excerpt', () => {
     const email = createParsedEmail({
       from: { name: 'Design Weekly', email: 'hello@designweekly.com' },
       subject: 'Issue #47',
       isNewsletter: true,
       newsletterName: 'Design Weekly',
+      body: 'CSS updates this week.',
     });
 
-    const markdown = generateNewsletterMarkdown(email);
-
-    expect(markdown).toContain('## Design Weekly — Issue #47');
+    const entry = generateDigestEntry(email, 'https://example.com/view');
+    expect(entry).toContain('### Design Weekly — Issue #47');
+    expect(entry).toContain('**From:** hello@designweekly.com');
+    expect(entry).toContain('[Read full newsletter →](https://example.com/view)');
+    expect(entry).toContain('> CSS updates this week.');
   });
 
-  it('escapes YAML-problematic newsletter names', () => {
+  it('renders entry without URL', () => {
     const email = createParsedEmail({
-      isNewsletter: true,
-      newsletterName: 'News: Daily Update',
-    });
-
-    const markdown = generateNewsletterMarkdown(email);
-    expect(markdown).toContain('newsletter_name: "News: Daily Update"');
-  });
-
-  it('includes body excerpt after separator', () => {
-    const email = createParsedEmail({
-      isNewsletter: true,
       newsletterName: 'Test',
-      body: 'This is the newsletter excerpt content.',
-      viewInBrowserUrl: 'https://example.com/view',
+      subject: 'Hello',
+      body: 'Content here.',
     });
 
-    const markdown = generateNewsletterMarkdown(email);
-    expect(markdown).toContain('This is the newsletter excerpt content.');
+    const entry = generateDigestEntry(email, null);
+    expect(entry).not.toContain('[Read full newsletter');
+    expect(entry).toContain('> Content here.');
+  });
+
+  it('renders entry without body', () => {
+    const email = createParsedEmail({
+      newsletterName: 'Test',
+      subject: 'Hello',
+      body: '',
+    });
+
+    const entry = generateDigestEntry(email, 'https://example.com');
+    expect(entry).toContain('### Test — Hello');
+    expect(entry).toContain('[Read full newsletter →]');
+    // No blockquote lines (lines starting with "> ")
+    expect(entry).not.toMatch(/^> /m);
+  });
+
+  it('formats multi-line body as blockquote', () => {
+    const email = createParsedEmail({
+      newsletterName: 'Test',
+      subject: 'Hello',
+      body: 'Line one\nLine two\nLine three',
+    });
+
+    const entry = generateDigestEntry(email, null);
+    expect(entry).toContain('> Line one\n> Line two\n> Line three');
+  });
+
+  it('falls back to from.name when newsletterName is empty', () => {
+    const email = createParsedEmail({
+      from: { name: 'Fallback Name', email: 'fallback@test.com' },
+      subject: 'Subject',
+      newsletterName: '',
+    });
+
+    const entry = generateDigestEntry(email, null);
+    expect(entry).toContain('### Fallback Name — Subject');
   });
 });
 
-describe('generateNewsletterFilename', () => {
-  it('generates newsletter filename with newsletter name prefix', () => {
-    const email = createParsedEmail({
-      from: { name: 'Design Weekly', email: 'hello@designweekly.com' },
-      subject: 'Issue #47: CSS Updates',
-      date: new Date('2026-02-03T10:00:00Z'),
-      isNewsletter: true,
-      newsletterName: 'Design Weekly',
-    });
+describe('generateDigestMarkdown', () => {
+  it('generates digest with single entry and topic section', () => {
+    const date = new Date('2026-02-03T10:00:00Z');
+    const entries = ['### Test — Subject\n**From:** a@b.com'];
+    const emailIds = ['id-1'];
+    const topics = ['Tech'];
 
-    const filename = generateNewsletterFilename(email, '0 - INBOX/NEWSLETTERS');
-    expect(filename).toBe('0 - INBOX/NEWSLETTERS/2026-02-03 - Design Weekly - Issue #47- CSS Updates.md');
+    const md = generateDigestMarkdown(date, entries, emailIds, topics);
+    expect(md).toContain('tags:');
+    expect(md).toContain('- newsletter');
+    expect(md).toContain('- digest');
+    expect(md).toContain('created: 2026-02-03');
+    expect(md).toContain('newsletter_count: 1');
+    expect(md).toContain('  - id-1');
+    expect(md).toContain('email_topics:');
+    expect(md).toContain('  - Tech');
+    expect(md).toContain('# Newsletter Digest — 2026-02-03');
+    expect(md).toContain('## 💻 Tech');
+    expect(md).toContain('### Test — Subject');
   });
 
-  it('sanitizes unsafe characters in newsletter name', () => {
-    const email = createParsedEmail({
-      subject: 'Test',
-      date: new Date('2026-02-03T10:00:00Z'),
-      isNewsletter: true,
-      newsletterName: 'News/Letter:Special',
-    });
+  it('groups entries by topic with --- separator within sections', () => {
+    const date = new Date('2026-02-03T10:00:00Z');
+    const entries = ['### A — Sub1\n**From:** a@b.com', '### B — Sub2\n**From:** c@d.com'];
+    const emailIds = ['id-1', 'id-2'];
+    const topics = ['Tech', 'Tech'];
 
-    const filename = generateNewsletterFilename(email, 'NEWSLETTERS');
-    expect(filename).not.toContain('/Letter');
-    expect(filename).toContain('News-Letter-Special');
+    const md = generateDigestMarkdown(date, entries, emailIds, topics);
+    expect(md).toContain('newsletter_count: 2');
+    expect(md).toContain('## 💻 Tech');
+    // Both entries under same topic, separated by ---
+    expect(md).toContain('---\n\n### B — Sub2');
   });
 
-  it('truncates long newsletter names', () => {
-    const email = createParsedEmail({
-      subject: 'Short Subject',
-      date: new Date('2026-02-03T10:00:00Z'),
-      isNewsletter: true,
-      newsletterName: 'A'.repeat(80),
-    });
+  it('renders multiple topic sections in correct order', () => {
+    const date = new Date('2026-02-03T10:00:00Z');
+    const entries = ['### Design — CSS Tips\n**From:** d@e.com', '### TLDR — Tech News\n**From:** a@b.com'];
+    const emailIds = ['id-1', 'id-2'];
+    const topics = ['Design', 'Tech'];
 
-    const filename = generateNewsletterFilename(email, 'NL');
-    // Newsletter name should be truncated to 40 chars
-    const namePart = filename.split(' - ')[1];
-    expect(namePart.length).toBeLessThanOrEqual(40);
+    const md = generateDigestMarkdown(date, entries, emailIds, topics);
+    // Tech comes before Design in TOPIC_ORDER
+    const techIdx = md.indexOf('## 💻 Tech');
+    const designIdx = md.indexOf('## 🎨 Design');
+    expect(techIdx).toBeGreaterThan(-1);
+    expect(designIdx).toBeGreaterThan(-1);
+    expect(techIdx).toBeLessThan(designIdx);
   });
 
-  it('strips FWD prefix from subject', () => {
-    const email = createParsedEmail({
-      subject: 'Fwd: Weekly Digest',
-      date: new Date('2026-02-03T10:00:00Z'),
-      isNewsletter: true,
-      newsletterName: 'Tech News',
-    });
+  it('includes all email IDs and topics in frontmatter', () => {
+    const date = new Date('2026-02-03T10:00:00Z');
+    const md = generateDigestMarkdown(date, ['e1', 'e2', 'e3'], ['a', 'b', 'c'], ['Tech', 'Design', 'General']);
+    expect(md).toContain('  - a\n  - b\n  - c');
+    expect(md).toContain('email_topics:\n  - Tech\n  - Design\n  - General');
+  });
 
-    const filename = generateNewsletterFilename(email, 'NL');
-    expect(filename).not.toContain('Fwd:');
-    expect(filename).toContain('Weekly Digest');
+  it('defaults missing topics to General', () => {
+    const date = new Date('2026-02-03T10:00:00Z');
+    const md = generateDigestMarkdown(date, ['### A\n**From:** a@b.com'], ['id-1']);
+    expect(md).toContain('email_topics:\n  - General');
+    expect(md).toContain('## 📬 General');
+  });
+});
+
+describe('parseDigestMarkdown', () => {
+  it('extracts entries, email IDs, and topics from grouped format', () => {
+    const md = `---
+tags:
+  - newsletter
+  - digest
+created: 2026-02-03
+newsletter_count: 2
+email_ids:
+  - id-1
+  - id-2
+email_topics:
+  - Tech
+  - Design
+---
+
+# Newsletter Digest — 2026-02-03
+
+## 💻 Tech
+
+### A — Sub1
+**From:** a@b.com
+
+## 🎨 Design
+
+### B — Sub2
+**From:** c@d.com
+`;
+
+    const result = parseDigestMarkdown(md);
+    expect(result.emailIds).toEqual(['id-1', 'id-2']);
+    expect(result.topics).toEqual(['Tech', 'Design']);
+    expect(result.entries).toHaveLength(2);
+    expect(result.entries[0]).toContain('### A — Sub1');
+    expect(result.entries[1]).toContain('### B — Sub2');
+  });
+
+  it('handles single entry digest', () => {
+    const md = `---
+tags:
+  - newsletter
+  - digest
+created: 2026-02-03
+newsletter_count: 1
+email_ids:
+  - id-1
+email_topics:
+  - General
+---
+
+# Newsletter Digest — 2026-02-03
+
+## 📬 General
+
+### A — Sub1
+**From:** a@b.com
+`;
+
+    const result = parseDigestMarkdown(md);
+    expect(result.emailIds).toEqual(['id-1']);
+    expect(result.topics).toEqual(['General']);
+    expect(result.entries).toHaveLength(1);
+  });
+
+  it('round-trips with generateDigestMarkdown', () => {
+    const date = new Date('2026-02-03T10:00:00Z');
+    const entries = [
+      '### Design Weekly — Issue #47\n**From:** hello@designweekly.com\n[Read full newsletter →](https://example.com)\n\n> Great CSS updates.',
+      '### Morning Brew — Daily\n**From:** crew@brew.com\n\n> Top stories today.',
+    ];
+    const emailIds = ['id-1', 'id-2'];
+    const topics = ['Design', 'Tech'];
+
+    const md = generateDigestMarkdown(date, entries, emailIds, topics);
+    const parsed = parseDigestMarkdown(md);
+
+    // All arrays are sorted by TOPIC_ORDER (Tech before Design)
+    expect(parsed.emailIds).toEqual(['id-2', 'id-1']);
+    expect(parsed.topics).toEqual(['Tech', 'Design']);
+    expect(parsed.entries).toHaveLength(2);
+    expect(parsed.entries[0]).toContain('### Morning Brew — Daily');
+    expect(parsed.entries[1]).toContain('### Design Weekly — Issue #47');
+  });
+
+  it('handles legacy flat format without topics (defaults to General)', () => {
+    const md = `---
+tags:
+  - newsletter
+  - digest
+created: 2026-02-03
+newsletter_count: 2
+email_ids:
+  - id-1
+  - id-2
+---
+
+# Newsletter Digest — 2026-02-03
+
+### A — Sub1
+**From:** a@b.com
+
+---
+
+### B — Sub2
+**From:** c@d.com
+`;
+
+    const result = parseDigestMarkdown(md);
+    expect(result.emailIds).toEqual(['id-1', 'id-2']);
+    expect(result.entries).toHaveLength(2);
+    expect(result.topics).toEqual(['General', 'General']);
+  });
+
+  it('handles empty/malformed content gracefully', () => {
+    const result = parseDigestMarkdown('');
+    expect(result.emailIds).toEqual([]);
+    expect(result.entries).toEqual([]);
+    expect(result.topics).toEqual([]);
   });
 });
 
@@ -688,7 +896,7 @@ describe('generateAgentMessageMarkdown', () => {
     expect(markdown).toContain('subject: "Task: Do this thing"');
   });
 
-  it('includes attachment wikilinks when attachments are present', () => {
+  it('includes attachment URLs when attachments are present', () => {
     const email = createParsedEmail({
       messageId: 'agent-att-123',
       attachments: [
@@ -709,13 +917,19 @@ describe('generateAgentMessageMarkdown', () => {
           contentId: '',
         },
       ],
+      attachmentUrls: [
+        'https://worker.example.com/attachment/agent-att-123/report.pdf',
+        'https://worker.example.com/attachment/agent-att-123/screenshot.png',
+      ],
     });
 
     const markdown = generateAgentMessageMarkdown(email);
 
     expect(markdown).toContain('## Attachments');
-    expect(markdown).toContain('![[_attachments/agent-att-123/report.pdf]]');
-    expect(markdown).toContain('![[_attachments/agent-att-123/screenshot.png]]');
+    // PDF = regular link (not image)
+    expect(markdown).toContain('[report.pdf](https://worker.example.com/attachment/agent-att-123/report.pdf)');
+    // PNG = image embed
+    expect(markdown).toContain('![screenshot.png](https://worker.example.com/attachment/agent-att-123/screenshot.png)');
   });
 
   it('omits attachments section when no attachments', () => {
@@ -772,5 +986,110 @@ describe('generateAgentMessageFilename', () => {
     // Agent/ + date + " - " + subject(max 100) + .md
     const subjectPart = filename.split(' - ').slice(1).join(' - ').replace('.md', '');
     expect(subjectPart.length).toBeLessThanOrEqual(100);
+  });
+});
+
+// --- Attachment URL Helpers ---
+
+describe('isImageMimeType', () => {
+  it('returns true for image MIME types', () => {
+    expect(isImageMimeType('image/png')).toBe(true);
+    expect(isImageMimeType('image/jpeg')).toBe(true);
+    expect(isImageMimeType('image/gif')).toBe(true);
+    expect(isImageMimeType('image/webp')).toBe(true);
+    expect(isImageMimeType('image/svg+xml')).toBe(true);
+  });
+
+  it('returns false for non-image MIME types', () => {
+    expect(isImageMimeType('application/pdf')).toBe(false);
+    expect(isImageMimeType('text/plain')).toBe(false);
+    expect(isImageMimeType('application/octet-stream')).toBe(false);
+    expect(isImageMimeType('video/mp4')).toBe(false);
+  });
+});
+
+describe('buildAttachmentUrl', () => {
+  it('returns HTTP URL when WORKER_URL is set', () => {
+    expect(buildAttachmentUrl('https://worker.example.com', 'msg-123', 'file.pdf'))
+      .toBe('https://worker.example.com/attachment/msg-123/file.pdf');
+  });
+
+  it('strips trailing slash from WORKER_URL', () => {
+    expect(buildAttachmentUrl('https://worker.example.com/', 'msg-123', 'file.pdf'))
+      .toBe('https://worker.example.com/attachment/msg-123/file.pdf');
+  });
+
+  it('returns relative path when WORKER_URL is empty', () => {
+    expect(buildAttachmentUrl('', 'msg-123', 'file.pdf'))
+      .toBe('_attachments/msg-123/file.pdf');
+  });
+
+  it('returns relative path when WORKER_URL is undefined', () => {
+    expect(buildAttachmentUrl(undefined, 'msg-123', 'file.pdf'))
+      .toBe('_attachments/msg-123/file.pdf');
+  });
+});
+
+describe('generateMarkdown attachment URLs', () => {
+  it('renders images with ![](url) syntax', () => {
+    const email = createParsedEmail({
+      messageId: 'att-test-1',
+      attachments: [
+        {
+          filename: 'photo.jpg',
+          mimeType: 'image/jpeg',
+          content: new ArrayBuffer(0),
+          disposition: 'attachment' as const,
+          related: false,
+          contentId: '',
+        },
+      ],
+      attachmentUrls: ['https://worker.example.com/attachment/att-test-1/photo.jpg'],
+    });
+
+    const markdown = generateMarkdown(email);
+    expect(markdown).toContain('![photo.jpg](https://worker.example.com/attachment/att-test-1/photo.jpg)');
+  });
+
+  it('renders non-images with [](url) syntax', () => {
+    const email = createParsedEmail({
+      messageId: 'att-test-2',
+      attachments: [
+        {
+          filename: 'document.pdf',
+          mimeType: 'application/pdf',
+          content: new ArrayBuffer(0),
+          disposition: 'attachment' as const,
+          related: false,
+          contentId: '',
+        },
+      ],
+      attachmentUrls: ['https://worker.example.com/attachment/att-test-2/document.pdf'],
+    });
+
+    const markdown = generateMarkdown(email);
+    expect(markdown).toContain('[document.pdf](https://worker.example.com/attachment/att-test-2/document.pdf)');
+    // Should NOT have image prefix
+    expect(markdown).not.toContain('![document.pdf]');
+  });
+
+  it('falls back to relative path when no attachmentUrls', () => {
+    const email = createParsedEmail({
+      messageId: 'att-test-3',
+      attachments: [
+        {
+          filename: 'file.txt',
+          mimeType: 'text/plain',
+          content: new ArrayBuffer(0),
+          disposition: 'attachment' as const,
+          related: false,
+          contentId: '',
+        },
+      ],
+      attachmentUrls: [],
+    });
+
+    const markdown = generateMarkdown(email);
+    expect(markdown).toContain('[file.txt](_attachments/att-test-3/file.txt)');
   });
 });

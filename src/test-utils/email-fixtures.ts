@@ -131,11 +131,14 @@ export function createParsedEmail(overrides: Partial<ParsedEmail> = {}) {
     from: overrides.from || { name: 'Test Sender', email: 'test@example.com' },
     subject: overrides.subject || 'Test Subject',
     date: overrides.date || new Date('2025-01-15T10:30:00Z'),
-    body: overrides.body || 'Test email body content',
+    body: overrides.body ?? 'Test email body content',
+    rawHtml: overrides.rawHtml,
     source: overrides.source || 'unknown' as const,
     attachments: overrides.attachments ?? [],
+    attachmentUrls: overrides.attachmentUrls ?? [],
     isNewsletter: overrides.isNewsletter ?? false,
     newsletterName: overrides.newsletterName ?? '',
     viewInBrowserUrl: overrides.viewInBrowserUrl ?? null,
+    topic: overrides.topic,
   };
 }
